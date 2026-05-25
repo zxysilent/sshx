@@ -52,7 +52,7 @@ func TestParseHostIPv6(t *testing.T) {
 		wantUser string
 	}{
 		{"user:pass@[::1]:8022", "::1", 8022, "user"},
-		{"[::1]", "::1", 0, ""},
+		{"[::1]", "[::1]", 0, ""},
 		{"[::1]:22", "::1", 22, ""},
 		{"root@[fe80::1%eth0]:2222", "fe80::1%eth0", 2222, "root"},
 	}

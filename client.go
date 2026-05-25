@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -120,6 +121,13 @@ func sshClient(addr, username, password, keyPath string, timeout time.Duration) 
 	return client, nil
 }
 
+// dialViaJump dials a TCP address through an SSH jump client, with a timeout.
+func dialViaJump(jump *ssh.Client, addr string, timeout time.Duration) (net.Conn, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	return jump.DialContext(ctx, "tcp", addr)
+}
+
 // connectHost connects to a target host through optional jump hosts.
 func connectHost(targetHost string, targetPort int, targetUser, targetPass string,
 	jumps []string, globalUser, globalPass, globalKey string, globalPort int, timeout time.Duration,
@@ -170,7 +178,7 @@ func connectHost(targetHost string, targetPort int, targetUser, targetPass strin
 		if err != nil {
 			return nil, fmt.Errorf("jump[%d] %s auth: %w", i, jumpCfgs[i].addr, err)
 		}
-		conn, err := prevJump.Dial("tcp", jumpCfgs[i].addr)
+		conn, err := dialViaJump(prevJump, jumpCfgs[i].addr, timeout)
 		if err != nil {
 			return nil, fmt.Errorf("tunnel %s -> jump[%d] %s failed: %w", prevAddr, i, jumpCfgs[i].addr, err)
 		}
@@ -191,7 +199,7 @@ func connectHost(targetHost string, targetPort int, targetUser, targetPass strin
 	if err != nil {
 		return nil, fmt.Errorf("target auth: %w", err)
 	}
-	tunnelConn, err := prevJump.Dial("tcp", targetAddr)
+	tunnelConn, err := dialViaJump(prevJump, targetAddr, timeout)
 	if err != nil {
 		return nil, fmt.Errorf("tunnel %s -> %s failed: %w", prevAddr, targetAddr, err)
 	}
