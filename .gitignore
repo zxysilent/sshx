@@ -1,8 +1,13 @@
 # binary
 sshrun
+sshrun.exe
 
 # test binary
 sshrun.test
+*.test
+
+# release artifacts
+dist/
 
 # coverage
 *.out
