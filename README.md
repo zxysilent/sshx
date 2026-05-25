@@ -88,11 +88,3 @@ sshx exec -H 192.168.1.10 "uptime"
 ```
 
 也支持 `-P $MY_ENV_VAR` 引用其他环境变量（自动 `$VAR` 展开）。
-
-## 交互式参数
-
-标志可以与命令参数任意混排:
-
-```bash
-sshx exec -c 4 ls -la -H host1 -H host2 /tmp
-```
