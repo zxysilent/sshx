@@ -88,3 +88,14 @@ sshx exec -H 192.168.1.10 "uptime"
 ```
 
 也支持 `-P $MY_ENV_VAR` 引用其他环境变量（自动 `$VAR` 展开）。
+
+## 参数混排
+
+通过 `pflag` 支持标志与命令参数任意位置交错，不需要把所有 `-H` 放在前面：
+
+```bash
+# 以下写法全部等价
+sshx exec -H host1 -H host2 "ls -la"
+sshx exec "ls -la" -H host1 -H host2
+sshx exec -c 4 ls -la -H host1 -H host2 /tmp
+```
