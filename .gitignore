@@ -1,0 +1,9 @@
+# binary
+sshrun
+
+# test binary
+sshrun.test
+
+# coverage
+*.out
+*.test
