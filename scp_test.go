@@ -39,7 +39,7 @@ func TestPushFileSuccess(t *testing.T) {
 
 	// Create a local file
 	localPath := filepath.Join(t.TempDir(), "test_push.txt")
-	content := "hello from sshrun test"
+	content := "hello from sshx test"
 	if err := os.WriteFile(localPath, []byte(content), 0644); err != nil {
 		t.Fatalf("write local file: %v", err)
 	}

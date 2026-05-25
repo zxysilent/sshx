@@ -1,108 +1,98 @@
-# sshrun — Lightweight SSH Remote Execution Tool
+# sshx — 轻量级 SSH 远程执行工具
 
-A standalone CLI binary built on `golang.org/x/crypto/ssh`. Supports remote command execution,
-interactive PTY shells, and SCP file transfers.
+> English version: [README.en.md](./README.en.md)
 
-**Dependencies**: Go standard library + `golang.org/x/crypto` + `golang.org/x/term` only.
-No external CLI frameworks.
-
-## Installation
-
-### `go install` (recommended)
+## 安装
 
 ```bash
-go install github.com/zxysilent/sshrun@latest
+# go install（推荐）
+go install github.com/zxysilent/sshx@latest
+
+# 从源码编译
+git clone https://github.com/zxysilent/sshx.git
+cd sshx
+go build -o sshx .
 ```
 
-Requires Go 1.26+.
+## 子命令速览
 
-### Build from source
+| 子命令  | 用途 | 多主机 |
+|--------|------|:-----:|
+| `exec` | 远程执行命令或本地脚本 | ✅ |
+| `shell`| 交互式 PTY 终端 | ❌ |
+| `push` | 上传文件 (SCP) | ❌ |
+| `pull` | 下载文件 (SCP) | ❌ |
+
+## `-H` 格式
+
+```
+-H [用户名[:密码]@]主机[:端口]
+```
+
+行内凭据覆盖全局 `-u`/`-P`/`-p`。省略字段回退到全局值。
 
 ```bash
-git clone https://github.com/zxysilent/sshrun.git
-cd sshrun
-go build -o sshrun .
+-H 192.168.1.10                  # 裸主机
+-H root@192.168.1.10             # 指定用户
+-H root:pass@192.168.1.10        # 用户 + 密码
+-H root:pass@192.168.1.10:2222   # 全部指定
 ```
 
-## Subcommands
+## 全局参数
 
-### 1. exec — Execute a command on remote hosts
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `-H` | **必填** | 目标主机（exec 可多次指定） |
+| `-p` | `22` | SSH 端口 |
+| `-u` | 当前用户 | SSH 用户名 |
+| `-P` | `$SSHX_PASSWD` | SSH 密码 |
+| `-i` | `~/.ssh/id_rsa` | 私钥路径 |
+| `-t` | `10s` | 连接超时 |
+| `-J` | 无 | 跳板机（可多次指定） |
 
-Supports multiple hosts. Runs sequentially by default; use `-c <n>` to control concurrency (1-128, default 1).
+### exec 专属
 
-Each `-H` accepts `[user[:password]@]host[:port]` format. Per-host credentials override
-global `-u`/`-P`/`-p` flags. Use key-based auth (`-k`) for heterogeneous environments.
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `-c` | `1` | 最大并发数 (1=串行, 128=最大) |
+| `-f` | 无 | 本地 Shell 脚本路径 |
+
+## 认证策略
+
+1. **私钥优先**: `-i` 路径或 `~/.ssh/id_rsa`
+2. **密码回退**: `-P` 参数 → `$SSHX_PASSWD` 环境变量 → `-H` 行内指定
+3. **报错退出**: 全部不可用时报错
+
+## 跳板机 (`-J`)
+
+支持多次指定，按顺序逐跳建立隧道。所有子命令均支持。
 
 ```bash
-# Single host
-sshrun exec -H 172.22.1.xx "ls -la /"
+# 单跳板
+sshx exec -J root:pass@192.168.1.10 -H 192.168.1.20 "hostname"
 
-# Multiple hosts (sequential, default)
-sshrun exec -H host1 -H host2 -H host3 "apt update"
+# 多跳链
+sshx exec -J hop1 -J hop2 -H target "uptime"
 
-# Multiple hosts (concurrent, at most 4 at a time)
-sshrun exec -H host1 -H host2 -H host3 -c 4 "uptime"
-
-# Per-host credentials (overrides global -u/-P)
-sshrun exec -H root:pass1@host1 -H root:pass2@host2 "hostname"
-
-# Mixed: global default with one host overriding
-sshrun exec -H root:admin123@host1:2222 -H host2 -u root -P globalpass "df -h"
+# 文件传输过跳板
+sshx push -J 192.168.1.10 -H 192.168.1.20 ./local.txt /tmp/remote.txt
 ```
 
-### 2. shell — Interactive PTY shell
+## 密码环境变量
 
-Launches an interactive terminal with PTY support (vim, top, etc. work).
-Window size is synced automatically via SIGWINCH.
+避免密码出现在 shell 历史和进程列表中，使用 `SSHX_PASSWD`:
 
 ```bash
-sshrun shell -H 172.22.1.xx
-sshrun shell -H 172.22.1.xx -u root
+export SSHX_PASSWD="your-secret"
+sshx exec -H 192.168.1.10 "uptime"
 ```
 
-### 3. push — Upload a file via SCP
+也支持 `-P $MY_ENV_VAR` 引用其他环境变量（自动 `$VAR` 展开）。
 
-Uploads a single file (directories not supported).
+## 交互式参数
+
+标志可以与命令参数任意混排:
 
 ```bash
-sshrun push -H 172.22.1.xx ./local.txt /tmp/remote.txt
+sshx exec -c 4 ls -la -H host1 -H host2 /tmp
 ```
-
-### 4. pull — Download a file via SCP
-
-Downloads a single file from the remote host.
-
-```bash
-sshrun pull -H 172.22.1.xx /etc/hostname ./hostname.txt
-```
-
-## Common Flags
-
-| Flag | Description | Default |
-|------|-------------|---------|
-| `-H <host>` | Target host (`[user:pass@]host[:port]`, repeatable for `exec`) | **required** |
-| `-p <port>` | SSH port (overridable per-host via `-H host:port`) | `22` |
-| `-u <user>` | SSH username (overridable per-host via `-H user@host`) | current user |
-| `-P <passwd>` | SSH password (overridable per-host via `-H user:pass@host`) | (empty) |
-| `-k <key>` | Private key path | `~/.ssh/id_rsa` |
-| `-t <timeout>` | Connection timeout | `30s` |
-
-### exec-only flags
-
-| Flag | Description | Default |
-|------|-------------|---------|
-| `-c <n>` | Max concurrent hosts (1=sequential, 128=max) | `1` |
-
-## Authentication Strategy
-
-1. **Private key first**: `-k` path or `~/.ssh/id_rsa` if readable
-2. **Password fallback**: `-P` password if key is unavailable
-3. **Error**: exits if neither is available
-
-## Technical Details
-
-- **SCP protocol**: hand-rolled (no `github.com/pkg/sftp` dependency), using `ssh.Session`
-  stdin/stdout pipes with SCP source/sink mode
-- **Concurrency**: `exec` uses a semaphore (buffered channel) to cap goroutine count;
-  `-c <n>` controls the limit (min 1 = sequential, max 128)
-- **PTY**: raw mode + SIGWINCH window resize sync via `golang.org/x/term`

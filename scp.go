@@ -37,7 +37,7 @@ func pushFile(client *ssh.Client, localPath, remotePath string) error {
 	stdoutPipe, _ := session.StdoutPipe()
 
 	// Start remote scp -t (sink mode)
-	if err := session.Start("scp -t " + remotePath); err != nil {
+	if err := session.Start("scp -t " + shellQuote(remotePath)); err != nil {
 		return fmt.Errorf("failed to start scp: %w", err)
 	}
 
@@ -99,7 +99,7 @@ func pullFile(client *ssh.Client, remotePath, localPath string) error {
 	stdoutPipe, _ := session.StdoutPipe()
 
 	// Start remote scp -f (source mode)
-	if err := session.Start("scp -f " + remotePath); err != nil {
+	if err := session.Start("scp -f " + shellQuote(remotePath)); err != nil {
 		return fmt.Errorf("failed to start scp: %w", err)
 	}
 

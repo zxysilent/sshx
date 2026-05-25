@@ -1,8 +1,12 @@
 package main
 
 import (
+	"net"
+	"os"
 	"testing"
 	"time"
+
+	flag "github.com/spf13/pflag"
 )
 
 func TestResolveAddr(t *testing.T) {
@@ -79,18 +83,96 @@ func TestDefaultUser(t *testing.T) {
 	}
 }
 
-func TestHostsFlag(t *testing.T) {
-	var h hostsFlag
-	h.Set("host1")
-	h.Set("host2")
-	if len(h) != 2 {
-		t.Fatalf("expected 2 hosts, got %d", len(h))
+func TestPflagInterleaved(t *testing.T) {
+	// pflag with SetInterspersed(true) parses flags anywhere in args
+	fs := flag.NewFlagSet("test", flag.ContinueOnError)
+	fs.SetInterspersed(true)
+	var host string
+	var port int
+	var showHelp bool
+	fs.StringVarP(&host, "host", "H", "", "target host")
+	fs.IntVarP(&port, "port", "p", 22, "ssh port")
+	fs.BoolVarP(&showHelp, "help", "h", false, "show help")
+
+	// Flags interleaved with positional args
+	err := fs.Parse([]string{"cmd1", "-H", "h1", "-p", "2222", "cmd2"})
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
 	}
-	if h[0] != "host1" || h[1] != "host2" {
-		t.Fatalf("unexpected hosts: %v", h)
+	if host != "h1" {
+		t.Errorf("host = %q, want h1", host)
 	}
-	if h.String() != "host1,host2" {
-		t.Fatalf("unexpected String(): %s", h.String())
+	if port != 2222 {
+		t.Errorf("port = %d, want 2222", port)
+	}
+	if !showHelp {
+		// -h wasn't passed, so ok
+	}
+	args := fs.Args()
+	if len(args) != 2 || args[0] != "cmd1" || args[1] != "cmd2" {
+		t.Errorf("positional args = %v, want [cmd1 cmd2]", args)
+	}
+}
+
+func TestExpandEnv(t *testing.T) {
+	os.Setenv("TEST_VAR", "secret")
+	os.Setenv("TEST_USER", "admin")
+	defer func() {
+		os.Unsetenv("TEST_VAR")
+		os.Unsetenv("TEST_USER")
+	}()
+
+	tests := []struct {
+		name, input, want string
+	}{
+		{"no var", "plain", "plain"},
+		{"dollar var", "$TEST_VAR", "secret"},
+		{"brace var", "${TEST_VAR}", "secret"},
+		{"multiple vars", "$TEST_USER:$TEST_VAR", "admin:secret"},
+		{"unknown var", "$UNKNOWN", "$UNKNOWN"},
+		{"mixed", "user-$TEST_USER-pass-$TEST_VAR", "user-admin-pass-secret"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := expandEnv(tt.input)
+			if got != tt.want {
+				t.Errorf("expandEnv(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseHostEdgeCases(t *testing.T) {
+	tests := []struct {
+		name                         string
+		raw                          string
+		wantDisplay                  string
+		wantUser, wantPass, wantHost string
+		wantPort                     int
+	}{
+		{"empty password at colon", "root:@192.168.1.10", "root@192.168.1.10", "root", "", "192.168.1.10", 0},
+		{"password with special chars", "root:p@ss:w0rd@host1", "root@host1", "root", "p@ss:w0rd", "host1", 0},
+		{"only user no pass", "root@host1", "root@host1", "root", "", "host1", 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := parseHost(tt.raw)
+			if cfg.Display != tt.wantDisplay {
+				t.Errorf("Display = %q, want %q", cfg.Display, tt.wantDisplay)
+			}
+			if cfg.User != tt.wantUser {
+				t.Errorf("User = %q, want %q", cfg.User, tt.wantUser)
+			}
+			if cfg.Password != tt.wantPass {
+				t.Errorf("Password = %q, want %q", cfg.Password, tt.wantPass)
+			}
+			if cfg.Host != tt.wantHost {
+				t.Errorf("Host = %q, want %q", cfg.Host, tt.wantHost)
+			}
+			if cfg.Port != tt.wantPort {
+				t.Errorf("Port = %d, want %d", cfg.Port, tt.wantPort)
+			}
+		})
 	}
 }
 
@@ -104,11 +186,11 @@ func TestParseHost(t *testing.T) {
 		host     string
 		port     int
 	}{
-		{"bare host", "172.22.1.9", "172.22.1.9", "", "", "172.22.1.9", 0},
-		{"host:port", "172.22.1.9:2222", "172.22.1.9:2222", "", "", "172.22.1.9", 2222},
-		{"user@host", "root@172.22.1.9", "root@172.22.1.9", "root", "", "172.22.1.9", 0},
-		{"user:pass@host", "root:123@172.22.1.9", "root:123@172.22.1.9", "root", "123", "172.22.1.9", 0},
-		{"user:pass@host:port", "root:123@172.22.1.9:2222", "root:123@172.22.1.9:2222", "root", "123", "172.22.1.9", 2222},
+		{"bare host", "192.168.1.10", "192.168.1.10", "", "", "192.168.1.10", 0},
+		{"host:port", "192.168.1.10:2222", "192.168.1.10:2222", "", "", "192.168.1.10", 2222},
+		{"user@host", "root@192.168.1.10", "root@192.168.1.10", "root", "", "192.168.1.10", 0},
+		{"user:pass@host", "root:123@192.168.1.10", "root@192.168.1.10", "root", "123", "192.168.1.10", 0},
+		{"user:pass@host:port", "root:123@192.168.1.10:2222", "root@192.168.1.10:2222", "root", "123", "192.168.1.10", 2222},
 		{"hostname", "server.local", "server.local", "", "", "server.local", 0},
 		{"user@hostname:port", "admin@server.local:8022", "admin@server.local:8022", "admin", "", "server.local", 8022},
 	}
@@ -133,4 +215,58 @@ func TestParseHost(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestBuildAuthMethods(t *testing.T) {
+	// Only password
+	methods, err := buildAuthMethods("test", "pass123", "")
+	if err != nil {
+		t.Fatalf("buildAuthMethods with password failed: %v", err)
+	}
+	if len(methods) != 1 {
+		t.Fatalf("expected 1 method, got %d", len(methods))
+	}
+
+	// Empty key path + empty password -> error
+	_, err = buildAuthMethods("test", "", "/nonexistent/key/path")
+	if err == nil {
+		t.Fatal("expected error for nonexistent key with empty password, got nil")
+	}
+
+	// Password with env var expansion
+	os.Setenv("SECRET", "env-pass")
+	defer os.Unsetenv("SECRET")
+	methods, err = buildAuthMethods("test", "$SECRET", "")
+	if err != nil {
+		t.Fatalf("buildAuthMethods with $SECRET failed: %v", err)
+	}
+	if len(methods) != 1 {
+		t.Fatalf("expected 1 method, got %d", len(methods))
+	}
+}
+
+func TestConnectHostDirect(t *testing.T) {
+	srv := newTestSSHServer(t)
+	defer srv.Close()
+
+	client, err := connectHost("127.0.0.1", intPort(srv), "testuser", "testpass",
+		nil, "testuser", "testpass", "", 22, 5*time.Second)
+	if err != nil {
+		t.Fatalf("connectHost direct failed: %v", err)
+	}
+	defer client.Close()
+
+	session, _ := client.NewSession()
+	defer session.Close()
+	out, err := session.Output("echo direct")
+	if err != nil {
+		t.Fatalf("session.Output failed: %v", err)
+	}
+	if string(out) != "echo direct" {
+		t.Errorf("got %q, want %q", string(out), "echo direct")
+	}
+}
+
+func intPort(s *testSSHServer) int {
+	return s.listener.Addr().(*net.TCPAddr).Port
 }

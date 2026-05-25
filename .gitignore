@@ -1,9 +1,9 @@
 # binary
-sshrun
-sshrun.exe
+sshx
+sshx.exe
 
 # test binary
-sshrun.test
+sshx.test
 *.test
 
 # release artifacts

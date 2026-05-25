@@ -10,14 +10,6 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-// commandResult holds the result of executing a command on a single host.
-type commandResult struct {
-	Host   string
-	Stdout string
-	Stderr string
-	Err    error
-}
-
 // runCommand executes a command on a single host and returns stdout/stderr.
 func runCommand(client *ssh.Client, cmd string) (stdout, stderr string, err error) {
 	session, sessionErr := client.NewSession()
@@ -34,12 +26,40 @@ func runCommand(client *ssh.Client, cmd string) (stdout, stderr string, err erro
 	return outBuf.String(), errBuf.String(), err
 }
 
-// runCommandSerial executes the same command on multiple hosts sequentially,
-// printing results as each host completes.
-func runCommandSerial(clients map[string]*ssh.Client, cmd string) {
+// runCommandScript executes a shell script on a single host by piping its
+// content via stdin to "bash -s".
+func runCommandScript(client *ssh.Client, content string) (stdout, stderr string, err error) {
+	session, sessionErr := client.NewSession()
+	if sessionErr != nil {
+		return "", "", fmt.Errorf("failed to create session: %w", sessionErr)
+	}
+	defer session.Close()
+
+	stdinPipe, _ := session.StdinPipe()
+	var outBuf, errBuf strings.Builder
+	session.Stdout = &outBuf
+	session.Stderr = &errBuf
+
+	go func() {
+		io.WriteString(stdinPipe, content)
+		stdinPipe.Close()
+	}()
+
+	err = session.Run("bash -s")
+	return outBuf.String(), errBuf.String(), err
+}
+
+// runCommandSerialExec dispatches a command or script to hosts sequentially.
+func runCommandSerialExec(clients map[string]*ssh.Client, cmd string, isScript bool) {
 	for host, client := range clients {
 		fmt.Fprintf(os.Stderr, "===== exec on %s =====\n", host)
-		stdout, stderr, err := runCommand(client, cmd)
+		var stdout, stderr string
+		var err error
+		if isScript {
+			stdout, stderr, err = runCommandScript(client, cmd)
+		} else {
+			stdout, stderr, err = runCommand(client, cmd)
+		}
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "[error] %v\n", err)
 		}
@@ -52,45 +72,44 @@ func runCommandSerial(clients map[string]*ssh.Client, cmd string) {
 	}
 }
 
-// runCommandParallel executes the same command on multiple hosts concurrently,
-// limiting the number of simultaneous goroutines to concurrency.
-func runCommandParallel(clients map[string]*ssh.Client, cmd string, concurrency int) {
+// runCommandParallelExec dispatches a command or script to hosts concurrently.
+func runCommandParallelExec(clients map[string]*ssh.Client, cmd string, concurrency int, isScript bool) {
 	sem := make(chan struct{}, concurrency)
 	var wg sync.WaitGroup
-	results := make(chan commandResult, len(clients))
+	var mu sync.Mutex
 
 	for host, client := range clients {
 		wg.Add(1)
 		go func(h string, c *ssh.Client) {
 			defer wg.Done()
-			sem <- struct{}{}        // acquire
-			defer func() { <-sem }() // release
-			stdout, stderr, err := runCommand(c, cmd)
-			results <- commandResult{Host: h, Stdout: stdout, Stderr: stderr, Err: err}
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			var stdout, stderr string
+			var err error
+			if isScript {
+				stdout, stderr, err = runCommandScript(c, cmd)
+			} else {
+				stdout, stderr, err = runCommand(c, cmd)
+			}
+			mu.Lock()
+			fmt.Fprintf(os.Stderr, "===== exec on %s =====\n", h)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "[error] %v\n", err)
+			}
+			if stdout != "" {
+				fmt.Print(stdout)
+			}
+			if stderr != "" {
+				fmt.Fprint(os.Stderr, stderr)
+			}
+			mu.Unlock()
 		}(host, client)
 	}
-
-	go func() {
-		wg.Wait()
-		close(results)
-	}()
-
-	for r := range results {
-		fmt.Fprintf(os.Stderr, "===== exec on %s =====\n", r.Host)
-		if r.Err != nil {
-			fmt.Fprintf(os.Stderr, "[error] %v\n", r.Err)
-		}
-		if r.Stdout != "" {
-			fmt.Print(r.Stdout)
-		}
-		if r.Stderr != "" {
-			fmt.Fprint(os.Stderr, r.Stderr)
-		}
-	}
+	wg.Wait()
 }
 
 // runCommandDirect runs a command on a single host, streaming stdout/stderr
-// directly to the provided writers (useful for pre-flight checks, etc.).
+// directly to the provided writers.
 func runCommandDirect(client *ssh.Client, cmd string, stdout, stderr io.Writer) error {
 	session, err := client.NewSession()
 	if err != nil {

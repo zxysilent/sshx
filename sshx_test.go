@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/rand"
 	"crypto/rsa"
+	"encoding/binary"
 	"fmt"
 	"io"
 	"net"
@@ -10,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -68,8 +70,8 @@ func newTestSSHServer(t *testing.T) *testSSHServer {
 	return s
 }
 
-func (s *testSSHServer) Addr() string     { return s.addr }
-func (s *testSSHServer) TempDir() string  { return s.tmpDir }
+func (s *testSSHServer) Addr() string    { return s.addr }
+func (s *testSSHServer) TempDir() string { return s.tmpDir }
 
 func (s *testSSHServer) Close() {
 	s.listener.Close()
@@ -98,15 +100,22 @@ func (s *testSSHServer) handleConn(conn net.Conn, config *ssh.ServerConfig) {
 	go ssh.DiscardRequests(reqs)
 
 	for newChannel := range chans {
-		if newChannel.ChannelType() != "session" {
-			newChannel.Reject(ssh.UnknownChannelType, "only session supported")
-			continue
+		switch newChannel.ChannelType() {
+		case "session":
+			channel, requests, err := newChannel.Accept()
+			if err != nil {
+				continue
+			}
+			s.handleSession(channel, requests)
+		case "direct-tcpip":
+			channel, requests, err := newChannel.Accept()
+			if err != nil {
+				continue
+			}
+			s.handleDirectTCPIP(channel, requests, newChannel.ExtraData())
+		default:
+			newChannel.Reject(ssh.UnknownChannelType, "unsupported")
 		}
-		channel, requests, err := newChannel.Accept()
-		if err != nil {
-			continue
-		}
-		s.handleSession(channel, requests)
 	}
 }
 
@@ -129,6 +138,31 @@ func (s *testSSHServer) handleSession(channel ssh.Channel, requests <-chan *ssh.
 			req.Reply(false, nil)
 		}
 	}
+}
+
+func (s *testSSHServer) handleDirectTCPIP(channel ssh.Channel, requests <-chan *ssh.Request, extra []byte) {
+	defer channel.Close()
+	go ssh.DiscardRequests(requests)
+
+	if len(extra) < 8 {
+		return
+	}
+	hostLen := binary.BigEndian.Uint32(extra[:4])
+	host := string(extra[4 : 4+hostLen])
+	port := binary.BigEndian.Uint32(extra[4+hostLen : 4+hostLen+4])
+
+	target := net.JoinHostPort(host, fmt.Sprintf("%d", port))
+	conn, err := net.DialTimeout("tcp", target, 5*time.Second)
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { io.Copy(channel, conn); wg.Done() }()
+	go func() { io.Copy(conn, channel); wg.Done() }()
+	wg.Wait()
 }
 
 func (s *testSSHServer) handleExec(channel ssh.Channel, req *ssh.Request) {
@@ -192,7 +226,7 @@ func (s *testSSHServer) handleScpReceive(channel ssh.Channel, req *ssh.Request, 
 	channel.Write([]byte{0})
 
 	// Read file data
-	destPath := strings.TrimPrefix(cmd, "scp -t ")
+	destPath := stripShellQuote(strings.TrimPrefix(cmd, "scp -t "))
 	os.MkdirAll(filepath.Dir(destPath), 0755)
 	f, err := os.Create(destPath)
 	if err == nil {
@@ -213,7 +247,7 @@ func (s *testSSHServer) handleScpReceive(channel ssh.Channel, req *ssh.Request, 
 func (s *testSSHServer) handleScpSend(channel ssh.Channel, req *ssh.Request, cmd string) {
 	req.Reply(true, nil)
 
-	srcPath := strings.TrimPrefix(cmd, "scp -f ")
+	srcPath := stripShellQuote(strings.TrimPrefix(cmd, "scp -f "))
 
 	// Read client ACK
 	ack := make([]byte, 1)
@@ -261,6 +295,14 @@ func (s *testSSHServer) handleScpSend(channel ssh.Channel, req *ssh.Request, cmd
 	channel.SendRequest("exit-status", false, ssh.Marshal(&struct{ ExitStatus uint32 }{0}))
 }
 
+// stripShellQuote removes surrounding single quotes from a path.
+func stripShellQuote(s string) string {
+	if len(s) >= 2 && s[0] == '\'' && s[len(s)-1] == '\'' {
+		return s[1 : len(s)-1]
+	}
+	return s
+}
+
 // mkConn creates an SSH client connected to the test server with password auth.
 func (s *testSSHServer) newClient(t *testing.T) *ssh.Client {
 	t.Helper()
@@ -269,4 +311,110 @@ func (s *testSSHServer) newClient(t *testing.T) *ssh.Client {
 		t.Fatalf("connect to test server: %v", err)
 	}
 	return client
+}
+
+func TestConnectHostWithJump(t *testing.T) {
+	// Start two servers: jump and target
+	jumpSrv := newTestSSHServer(t)
+	defer jumpSrv.Close()
+	targetSrv := newTestSSHServer(t)
+	defer targetSrv.Close()
+
+	// Connect via jump to target
+	client, err := connectHost(
+		"127.0.0.1", targetSrv.listener.Addr().(*net.TCPAddr).Port,
+		"testuser", "testpass",
+		[]string{jumpSrv.addr},
+		"testuser", "testpass", "", 22, 5*time.Second,
+	)
+	if err != nil {
+		t.Fatalf("connectHost via jump failed: %v", err)
+	}
+	defer client.Close()
+
+	// Run a command through the tunnel
+	session, err := client.NewSession()
+	if err != nil {
+		t.Fatalf("NewSession via jump failed: %v", err)
+	}
+	defer session.Close()
+
+	out, err := session.Output("echo hello-jump")
+	if err != nil {
+		t.Fatalf("session.Output via jump failed: %v", err)
+	}
+	if string(out) != "echo hello-jump" {
+		t.Errorf("got %q, want %q", string(out), "echo hello-jump")
+	}
+}
+
+func TestConnectHostWithJumpPasswordFallback(t *testing.T) {
+	jumpSrv := newTestSSHServer(t)
+	defer jumpSrv.Close()
+	targetSrv := newTestSSHServer(t)
+	defer targetSrv.Close()
+
+	// Target has no password — should reuse jump's password
+	client, err := connectHost(
+		"127.0.0.1", targetSrv.listener.Addr().(*net.TCPAddr).Port,
+		"testuser", "", // empty target password
+		[]string{jumpSrv.addr},
+		"testuser", "testpass", "", 22, 5*time.Second,
+	)
+	if err != nil {
+		t.Fatalf("connectHost password fallback failed: %v", err)
+	}
+	defer client.Close()
+
+	session, err := client.NewSession()
+	if err != nil {
+		t.Fatalf("NewSession failed: %v", err)
+	}
+	defer session.Close()
+
+	if _, err := session.Output("echo ok"); err != nil {
+		t.Fatalf("session.Output failed: %v", err)
+	}
+}
+
+func TestConnectHostMultiHopChain(t *testing.T) {
+	// Setup: client → jump1 → jump2 → target
+	jump1 := newTestSSHServer(t)
+	defer jump1.Close()
+	jump2 := newTestSSHServer(t)
+	defer jump2.Close()
+	target := newTestSSHServer(t)
+	defer target.Close()
+
+	jumps := []string{
+		jump1.addr,
+		"testuser:testpass@" + jump2.addr,
+	}
+
+	client, err := connectHost(
+		"127.0.0.1", intPort(target),
+		"testuser", "testpass",
+		jumps,
+		"testuser", "testpass", "", 22, 5*time.Second,
+	)
+	if err != nil {
+		t.Fatalf("multi-hop connectHost failed: %v", err)
+	}
+	defer client.Close()
+
+	out, err := client.NewSession()
+	if err != nil {
+		t.Fatalf("NewSession via multi-hop: %v", err)
+	}
+	defer out.Close()
+
+	// Execute a command through 2-hop chain
+	var b strings.Builder
+	out.Stdout = &b
+	if err := out.Run("echo multi-hop-ok"); err != nil {
+		t.Fatalf("Run via multi-hop: %v", err)
+	}
+	if b.String() != "echo multi-hop-ok" {
+		t.Errorf("got %q, want %q", b.String(), "echo multi-hop-ok")
+	}
 }

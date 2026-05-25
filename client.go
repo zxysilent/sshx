@@ -7,40 +7,56 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
 	"golang.org/x/crypto/ssh"
 )
 
+// envVarPattern matches $VAR and ${VAR} in password strings.
+var envVarPattern = regexp.MustCompile(`\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?`)
+
+// expandEnv expands $VAR or ${VAR} references in s, fetching values from
+// the process environment. Unknown variables are left unchanged.
+func expandEnv(s string) string {
+	return envVarPattern.ReplaceAllStringFunc(s, func(match string) string {
+		name := strings.TrimPrefix(match, "${")
+		name = strings.TrimSuffix(name, "}")
+		name = strings.TrimPrefix(name, "$")
+		if val, ok := os.LookupEnv(name); ok {
+			return val
+		}
+		return match
+	})
+}
+
 // hostConfig holds the parsed components of a -H value.
 type hostConfig struct {
-	Display  string // original value for display labels
-	User     string // empty if not specified inline
-	Password string // empty if not specified inline
-	Host     string // bare host (no port)
-	Port     int    // 0 means use global default
+	Display  string
+	User     string
+	Password string
+	Host     string
+	Port     int
 }
 
 // parseHost parses a -H value of the form [user[:password]@]host[:port].
+// Display is sanitized: passwords are never shown in output.
 func parseHost(raw string) hostConfig {
 	cfg := hostConfig{Display: raw}
-
-	// Split on last '@' to separate credentials from address
 	addrPart := raw
 	if idx := strings.LastIndex(raw, "@"); idx >= 0 {
 		credPart := raw[:idx]
 		addrPart = raw[idx+1:]
-
 		if colon := strings.Index(credPart, ":"); colon >= 0 {
 			cfg.User = credPart[:colon]
 			cfg.Password = credPart[colon+1:]
 		} else {
 			cfg.User = credPart
 		}
+	} else {
+		cfg.User = ""
 	}
-
-	// Split address into host:port
 	if h, p, err := net.SplitHostPort(addrPart); err == nil {
 		cfg.Host = h
 		if port, perr := fmt.Sscanf(p, "%d", &cfg.Port); port != 1 || perr != nil {
@@ -49,16 +65,20 @@ func parseHost(raw string) hostConfig {
 	} else {
 		cfg.Host = addrPart
 	}
-
+	display := cfg.Host
+	if cfg.Port != 0 {
+		display = net.JoinHostPort(cfg.Host, fmt.Sprintf("%d", cfg.Port))
+	}
+	if cfg.User != "" {
+		display = cfg.User + "@" + display
+	}
+	cfg.Display = display
 	return cfg
 }
 
-// sshClient creates an SSH client connection.
-// Auth strategy: private key first, then password fallback.
-func sshClient(addr, username, password, keyPath string, timeout time.Duration) (*ssh.Client, error) {
+// buildAuthMethods returns ssh.AuthMethod slice from key file and/or password.
+func buildAuthMethods(username, password, keyPath string) ([]ssh.AuthMethod, error) {
 	authMethods := []ssh.AuthMethod{}
-
-	// 1. Try private key authentication
 	resolvedKey := keyPath
 	if resolvedKey == "" {
 		if u, lookupErr := user.Lookup(username); lookupErr == nil {
@@ -72,28 +92,121 @@ func sshClient(addr, username, password, keyPath string, timeout time.Duration) 
 			}
 		}
 	}
-
-	// 2. Append password authentication
 	if password != "" {
-		authMethods = append(authMethods, ssh.Password(password))
+		authMethods = append(authMethods, ssh.Password(expandEnv(password)))
 	}
-
 	if len(authMethods) == 0 {
 		return nil, errors.New("no valid authentication methods (key not found and password is empty)")
 	}
+	return authMethods, nil
+}
 
+// sshClient creates a direct SSH client connection.
+func sshClient(addr, username, password, keyPath string, timeout time.Duration) (*ssh.Client, error) {
+	authMethods, err := buildAuthMethods(username, password, keyPath)
+	if err != nil {
+		return nil, err
+	}
 	config := &ssh.ClientConfig{
 		Timeout:         timeout,
 		User:            username,
 		Auth:            authMethods,
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
 	}
-
 	client, err := ssh.Dial("tcp", addr, config)
 	if err != nil {
 		return nil, fmt.Errorf("ssh dial %s failed: %w", addr, err)
 	}
 	return client, nil
+}
+
+// connectHost connects to a target host through optional jump hosts.
+func connectHost(targetHost string, targetPort int, targetUser, targetPass string,
+	jumps []string, globalUser, globalPass, globalKey string, globalPort int, timeout time.Duration,
+) (*ssh.Client, error) {
+	targetAddr := net.JoinHostPort(targetHost, fmt.Sprintf("%d", targetPort))
+	if len(jumps) == 0 {
+		return sshClient(targetAddr, targetUser, targetPass, globalKey, timeout)
+	}
+	type jumpCfg struct {
+		user, pass, addr string
+		client           *ssh.Client
+	}
+	jumpCfgs := make([]jumpCfg, len(jumps))
+	for i, raw := range jumps {
+		jc := parseHost(raw)
+		u := jc.User
+		if u == "" {
+			u = globalUser
+		}
+		p := jc.Password
+		if p == "" {
+			p = globalPass
+		}
+		port := jc.Port
+		if port == 0 {
+			port = globalPort
+		}
+		jumpCfgs[i] = jumpCfg{
+			user: u, pass: p,
+			addr: net.JoinHostPort(jc.Host, fmt.Sprintf("%d", port)),
+		}
+	}
+	auth, err := buildAuthMethods(jumpCfgs[0].user, jumpCfgs[0].pass, globalKey)
+	if err != nil {
+		return nil, fmt.Errorf("jump[0] %s auth: %w", jumpCfgs[0].addr, err)
+	}
+	first, err := ssh.Dial("tcp", jumpCfgs[0].addr, &ssh.ClientConfig{
+		Timeout: timeout, User: jumpCfgs[0].user, Auth: auth, HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("jump[0] %s dial failed: %w", jumpCfgs[0].addr, err)
+	}
+	jumpCfgs[0].client = first
+	prevJump := first
+	prevAddr := jumpCfgs[0].addr
+	for i := 1; i < len(jumpCfgs); i++ {
+		auth, err := buildAuthMethods(jumpCfgs[i].user, jumpCfgs[i].pass, globalKey)
+		if err != nil {
+			return nil, fmt.Errorf("jump[%d] %s auth: %w", i, jumpCfgs[i].addr, err)
+		}
+		conn, err := prevJump.Dial("tcp", jumpCfgs[i].addr)
+		if err != nil {
+			return nil, fmt.Errorf("tunnel %s -> jump[%d] %s failed: %w", prevAddr, i, jumpCfgs[i].addr, err)
+		}
+		sc, chans, reqs, err := ssh.NewClientConn(conn, jumpCfgs[i].addr, &ssh.ClientConfig{
+			Timeout: timeout, User: jumpCfgs[i].user, Auth: auth, HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		})
+		if err != nil {
+			return nil, fmt.Errorf("jump[%d] %s handshake via %s: %w", i, jumpCfgs[i].addr, prevAddr, err)
+		}
+		jumpCfgs[i].client = ssh.NewClient(sc, chans, reqs)
+		prevJump = jumpCfgs[i].client
+		prevAddr = jumpCfgs[i].addr
+	}
+	if targetPass == "" && jumpCfgs[len(jumpCfgs)-1].pass != "" {
+		targetPass = jumpCfgs[len(jumpCfgs)-1].pass
+	}
+	targetAuth, err := buildAuthMethods(targetUser, targetPass, globalKey)
+	if err != nil {
+		return nil, fmt.Errorf("target auth: %w", err)
+	}
+	tunnelConn, err := prevJump.Dial("tcp", targetAddr)
+	if err != nil {
+		return nil, fmt.Errorf("tunnel %s -> %s failed: %w", prevAddr, targetAddr, err)
+	}
+	targetConn, chans, reqs, err := ssh.NewClientConn(tunnelConn, targetAddr, &ssh.ClientConfig{
+		Timeout: timeout, User: targetUser, Auth: targetAuth, HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("target ssh handshake via %s: %w", prevAddr, err)
+	}
+	return ssh.NewClient(targetConn, chans, reqs), nil
+}
+
+// shellQuote wraps s in single quotes for shell safety.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
 }
 
 // resolveAddr parses host:port. If host already contains a port, it is used as-is;

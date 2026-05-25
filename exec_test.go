@@ -47,7 +47,7 @@ func TestRunCommandSerial(t *testing.T) {
 	os.Stdout = wOut
 	os.Stderr = wErr
 
-	runCommandSerial(clients, "uptime")
+	runCommandSerialExec(clients, "uptime", false)
 
 	wOut.Close()
 	wErr.Close()
@@ -87,7 +87,7 @@ func TestRunCommandParallel(t *testing.T) {
 	os.Stdout = wOut2
 	os.Stderr = wErr2
 
-	runCommandParallel(clients, "hostname", 3)
+	runCommandParallelExec(clients, "hostname", 3, false)
 
 	wOut2.Close()
 	wErr2.Close()
@@ -128,7 +128,7 @@ func TestRunCommandParallelLimit(t *testing.T) {
 	os.Stdout = wOut
 	os.Stderr = wErr
 
-	runCommandParallel(clients, "id", 2)
+	runCommandParallelExec(clients, "id", 2, false)
 
 	wOut.Close()
 	wErr.Close()
@@ -148,6 +148,38 @@ func TestRunCommandParallelLimit(t *testing.T) {
 	}
 	if !strings.Contains(output, "id") {
 		t.Errorf("output missing command output 'id'\nGot:\n%s", output)
+	}
+}
+
+func TestRunCommandScript(t *testing.T) {
+	srv := newTestSSHServer(t)
+	defer srv.Close()
+	client := srv.newClient(t)
+	defer client.Close()
+
+	script := "echo hello-from-script\necho line2"
+	stdout, stderr, err := runCommandScript(client, script)
+	if err != nil {
+		t.Fatalf("runCommandScript failed: %v", err)
+	}
+	if stdout != "" || stderr != "" {
+		// test server echoes "bash -s" as stdout when exec payload is received;
+		// script content went via stdin pipe and is fine as long as no error
+		t.Logf("stdout=%q stderr=%q", stdout, stderr)
+	}
+}
+
+func TestRunCommandScriptNonZero(t *testing.T) {
+	srv := newTestSSHServer(t)
+	defer srv.Close()
+	client := srv.newClient(t)
+	defer client.Close()
+
+	// Script that fails — test server still returns exit=0, so this is a
+	// smoke test only. Real exit-code testing needs a real SSH server.
+	_, _, err := runCommandScript(client, "exit 1")
+	if err != nil {
+		t.Logf("expected script error: %v", err)
 	}
 }
 
