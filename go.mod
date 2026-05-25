@@ -1,4 +1,4 @@
-module sshrun
+module github.com/zxysilent/sshrun
 
 go 1.26.0
 

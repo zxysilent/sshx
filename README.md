@@ -8,8 +8,19 @@ No external CLI frameworks.
 
 ## Installation
 
+### `go install` (recommended)
+
 ```bash
-cd /opt/hci/sshrun
+go install github.com/zxysilent/sshrun@latest
+```
+
+Requires Go 1.26+.
+
+### Build from source
+
+```bash
+git clone https://github.com/zxysilent/sshrun.git
+cd sshrun
 go build -o sshrun .
 ```
 
