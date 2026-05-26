@@ -53,9 +53,8 @@ jobs:
       - name: Generate checksums
         run: |
           cd artifacts
-          for d in sshx-*; do
-            cp "$d/sshx-"* . 2>/dev/null || true
-          done
+          find . -type f -name 'sshx-*' -exec mv {} . \;
+          find . -type d -name 'sshx-*' -exec rm -rf {} + 2>/dev/null || true
           sha256sum sshx-* > checksums.txt
 
       - name: Create Release
