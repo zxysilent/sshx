@@ -162,10 +162,12 @@ func TestRunCommandScript(t *testing.T) {
 	if err != nil {
 		t.Fatalf("runCommandScript failed: %v", err)
 	}
-	if stdout != "" || stderr != "" {
-		// test server echoes "bash -s" as stdout when exec payload is received;
-		// script content went via stdin pipe and is fine as long as no error
-		t.Logf("stdout=%q stderr=%q", stdout, stderr)
+	// Test server now echoes script content from stdin
+	if stdout != script {
+		t.Errorf("expected stdout %q, got %q", script, stdout)
+	}
+	if stderr != "" {
+		t.Logf("stderr=%q", stderr)
 	}
 }
 
@@ -175,11 +177,12 @@ func TestRunCommandScriptNonZero(t *testing.T) {
 	client := srv.newClient(t)
 	defer client.Close()
 
-	// Script that fails — test server still returns exit=0, so this is a
-	// smoke test only. Real exit-code testing needs a real SSH server.
+	// Script that fails — now server echoes stdin content but bash exit
+	// doesn't propagate through our test server's handleExec. This is a
+	// smoke test that verifies no panic on non-zero scripts.
 	_, _, err := runCommandScript(client, "exit 1")
 	if err != nil {
-		t.Logf("expected script error: %v", err)
+		t.Logf("script error (may or may not occur): %v", err)
 	}
 }
 

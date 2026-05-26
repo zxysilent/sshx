@@ -8,8 +8,6 @@
 go install github.com/zxysilent/sshx@latest
 ```
 
-Requires Go 1.26+.
-
 ### Build from source
 
 ```bash
@@ -18,132 +16,154 @@ cd sshx
 go build -o sshx .
 ```
 
-## Subcommands
+## Quick Start
 
-### 1. exec — Execute a command on remote hosts
-
-Supports multiple hosts. Runs sequentially by default; use `-c <n>` to control concurrency (1-128, default 1).
-
-Each `-H` accepts `[user[:password]@]host[:port]` format. Per-host credentials override
-global `-u`/`-P`/`-p` flags. Use key-based auth (`-i`) for heterogeneous environments.
+Behaves like native `ssh`, with built-in multi-host support:
 
 ```bash
-# Single host
-sshx exec -H 192.168.1.10 "ls -la /"
+# Interactive shell (like ssh)
+sshx 192.168.1.10
 
-# Multiple hosts (sequential, default)
-sshx exec -H host1 -H host2 -H host3 "apt update"
+# Single host command
+sshx 192.168.1.10 "ls -la /"
 
-# Multiple hosts (concurrent, at most 4 at a time)
-sshx exec -H host1 -H host2 -H host3 -c 4 "uptime"
+# Multi-host (repeatable -H)
+sshx -H host1 -H host2 -H host3 "df -h"
 
-# Per-host credentials (overrides global -u/-P)
-sshx exec -H root:pass1@host1 -H root:pass2@host2 "hostname"
+# Concurrent with -c
+sshx -H h1 -H h2 -H h3 -H h4 -c 4 "uptime"
 
-# Mixed: global default with one host overriding
-sshx exec -H root:admin123@host1:2222 -H host2 -u root -P globalpass "df -h"
-
-# Via jump host (192.168.1.10 → 192.168.1.20)
-sshx exec -J 192.168.1.10 -H 192.168.1.20 "hostname"
-
-# Jump host with custom port and credentials
-sshx exec -J root:pass@bastion:2222 -H 192.168.1.20 "uptime"
-
-# Run a local script on remote hosts
-sshx exec -f deploy.sh -H host1 -H host2 -H host3
-```
-
-### 2. shell — Interactive PTY shell
-
-Launches an interactive terminal with PTY support (vim, top, etc. work).
-Window size is synced automatically via SIGWINCH.
-
-```bash
-sshx shell -H 192.168.1.10
-sshx shell -H 192.168.1.10 -u root
-```
-
-### 3. push — Upload a file via SCP
-
-Uploads a single file (directories not supported).
-
-```bash
+# File transfer
 sshx push -H 192.168.1.10 ./local.txt /tmp/remote.txt
-```
-
-### 4. pull — Download a file via SCP
-
-Downloads a single file from the remote host.
-
-```bash
 sshx pull -H 192.168.1.10 /etc/hostname ./hostname.txt
 ```
 
-## Common Flags
+## Subcommands
 
-| Flag | Description | Default |
-|------|-------------|---------|
-| `-H <host>` | Target host (`[user:pass@]host[:port]`, repeatable for `exec`) | **required** |
-| `-p <port>` | SSH port (overridable per-host via `-H host:port`) | `22` |
-| `-u <user>` | SSH username (overridable per-host via `-H user@host`) | current user |
-| `-P <passwd>` | SSH password (overridable via `-H user:pass@host`; default from `$SSHX_PASSWD`) | (empty) |
-| `-i <key>` | Private key path | `~/.ssh/id_rsa` |
-| `-t <timeout>` | Connection timeout | `10s` |
-| `-J <host>` | Jump/bastion host (repeatable for chain; `[user:pass@]host[:port]`) | (disabled) |
+| Subcommand | Purpose | Multi-`-H` |
+|------------|---------|:----------:|
+| *(default)* | Interactive shell or command execution | ✅ |
+| `push` | Upload file via SCP | ❌ |
+| `pull` | Download file via SCP | ❌ |
 
-### exec-only flags
+> `exec` is kept as an alias for the default mode.
 
-| Flag | Description | Default |
-|------|-------------|---------|
-| `-c <n>` | Max concurrent hosts (1=sequential, 128=max) | `1` |
-| `-f <path>` | Local shell script to run on remote hosts | (none) |
+## `-H` Format
+
+```
+-H [user[:password]@]host[:port]
+```
+
+Per-host credentials override global `-u`/`-P`/`-p`. Omitted fields fall back to globals.
+
+```bash
+-H 192.168.1.10                     # bare host
+-H root@192.168.1.10                # custom user
+-H root:pass@192.168.1.10           # user + password
+-H root:pass@192.168.1.10:2222      # all fields
+```
+
+## Global Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `-H` | — | Target host for multi-host mode (repeatable) |
+| `-p` | `22` | SSH port |
+| `-u` | current user | SSH username |
+| `-P` | `$SSHX_PASSWD` | SSH password (supports `$VAR` expansion) |
+| `-i` | `~/.ssh/id_rsa` | Private key path |
+| `-t` | `10s` | Connection timeout |
+| `-J` | — | Jump/bastion host (repeatable for chaining) |
+| `-c` | `1` | Max concurrency (1=sequential, 128=max) |
+| `-f` | — | Local shell script to run on remote hosts |
+| `-h` | — | Show help |
+
+`-c` / `-f` only take effect in multi-host mode (`-H`).
+
+## Usage Patterns
+
+### Single-host mode (like ssh)
+
+```bash
+# Interactive shell
+sshx 192.168.1.10
+sshx root@192.168.1.10
+
+# Single command
+sshx 192.168.1.10 "df -h"
+sshx -u admin -P secret 192.168.1.10 "hostname"
+
+# Via jump host
+sshx -J bastion 192.168.1.20 "uptime"
+```
+
+### Multi-host mode (`-H`)
+
+```bash
+# Sequential (default -c 1)
+sshx -H host1 -H host2 -H host3 "df -h"
+
+# Concurrent
+sshx -H h1 -H h2 -H h3 -H h4 -c 4 "uptime"
+
+# Per-host credentials
+sshx -H root:pass1@host1 -H root:pass2@host2 "whoami"
+
+# Local script on multiple hosts
+sshx -f deploy.sh -H host1 -H host2 -H host3
+
+# Script + concurrency
+sshx -f script.sh -H h1 -H h2 -c 4
+```
+
+### File Transfer (push / pull)
+
+```bash
+# Upload
+sshx push -H 192.168.1.10 ./config.yaml /etc/app/config.yaml
+
+# Download
+sshx pull -H 192.168.1.10 /var/log/app.log ./app.log
+
+# Via jump host
+sshx push -J 192.168.1.10 -H 192.168.1.20 ./config.yaml /tmp/config.yaml
+```
 
 ## Jump Host (`-J`)
 
-Use `-J` to connect through one or more bastion/jump hosts when the target is not
-directly reachable. Specify multiple `-J` to chain: `-J hop1 -J hop2 -H target`.
-All subcommands (`exec`, `shell`, `push`, `pull`) support `-J`.
-Jump credentials use `[user:pass@]host[:port]` format — same as `-H`.
-Missing fields fall back to global `-u`/`-P`/`-p`.
-
-> When the target host has no explicit password, it automatically reuses the
-> last jump host's password (common when bastion and internal hosts share credentials).
+Tunnel through one or more bastion hosts in order:
 
 ```bash
-# Bare jump host
-sshx exec -J 192.168.1.10 -H 192.168.1.20 "hostname"
+# Single jump
+sshx -J root:pass@192.168.1.10 -H 192.168.1.20 "hostname"
 
-# Jump host with credentials
-sshx exec -J root:pass@192.168.1.10 -H 192.168.1.20 "uptime"
+# Multi-hop chain
+sshx -J hop1 -J hop2 -H target "uptime"
 
-# shell via jump
-sshx shell -J 192.168.1.10 -H 192.168.1.20
-
-# multi-hop chain
-sshx exec -J 10.10.0.1 -J 192.168.1.10 -H 192.168.1.20 "uptime"
-
-# file transfer via jump
-sshx push -J 192.168.1.10 -H 192.168.1.20 ./config.yaml /tmp/config.yaml
+# File transfer via jump
+sshx push -J 192.168.1.10 -H 192.168.1.20 ./local.txt /tmp/remote.txt
 ```
 
 ## Authentication Strategy
 
 1. **Private key first**: `-i` path or `~/.ssh/id_rsa` if readable
-2. **Password fallback**: `-P` flag, then `$SSHX_PASSWD` env var, then inline `-H user:pass@host`
+2. **Password fallback**: `-P` flag → `$SSHX_PASSWD` env var → inline `-H user:pass@host`
 3. **Error**: exits if neither is available
 
-To avoid exposing passwords in shell history or process listings, use the
-`SSHX_PASSWD` environment variable:
+Avoid passwords in shell history:
 
 ```bash
 export SSHX_PASSWD="your-secret"
-sshx exec -H 192.168.1.10 "uptime"
+sshx -H 192.168.1.10 "uptime"
 ```
 
-## Technical Details
+## Flag Interleaving
 
-- **SCP protocol**: hand-rolled (no `github.com/pkg/sftp` dependency), using `ssh.Session`
-  stdin/stdout pipes with SCP source/sink mode
-- **Concurrency**: `exec` uses a semaphore (buffered channel) to cap goroutine count;
-  `-c <n>` controls the limit (min 1 = sequential, max 128)
-- **PTY**: raw mode + SIGWINCH window resize sync via `golang.org/x/term`
+Flags and positional arguments can be freely interleaved:
+
+```bash
+# All equivalent
+sshx -H host1 -H host2 "ls -la"
+sshx "ls -la" -H host1 -H host2
+sshx -c 4 ls -la -H host1 -H host2 /tmp
+```

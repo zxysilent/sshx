@@ -12,16 +12,20 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
+// osExit is a variable to allow tests to intercept os.Exit calls.
+var osExit = os.Exit
+
 func main() {
 	if len(os.Args) < 2 {
 		printUsage()
-		os.Exit(1)
+		osExit(1)
 	}
+
+	// Known subcommands; anything else is treated as the default mode.
 	switch os.Args[1] {
 	case "exec":
-		runExec(os.Args[2:])
-	case "shell":
-		runShell(os.Args[2:])
+		// exec is just an alias for the default mode.
+		runDefault(os.Args[2:])
 	case "push":
 		runPush(os.Args[2:])
 	case "pull":
@@ -29,9 +33,7 @@ func main() {
 	case "-h", "--help", "help":
 		printUsage()
 	default:
-		fmt.Fprintf(os.Stderr, "unknown subcommand: %s\n\n", os.Args[1])
-		printUsage()
-		os.Exit(1)
+		runDefault(os.Args[1:])
 	}
 }
 
@@ -99,16 +101,17 @@ func newFlagSet(name string) *flag.FlagSet {
 	return fs
 }
 
-// exec
-
-func runExec(raw []string) {
+// runDefault — universal single-host or multi-host handler.
+// If -H is set: multi-host mode (command required, script via -f).
+// If -H not set: positional host required, then interactive shell or single command.
+func runDefault(raw []string) {
 	var cfg sshCfg
 	cfg.defaults()
 	var hosts []string
 	var concurrency int
 	var filePath string
 
-	fs := newFlagSet("exec")
+	fs := newFlagSet("sshx")
 	cfg.bindFlags(fs)
 	fs.StringArrayVarP(&hosts, "host", "H", nil, "target host ([user:pass@]host[:port], repeatable)")
 	fs.IntVarP(&concurrency, "concurrency", "c", 1, "max concurrent (1=seq, 128=max; capped at host count)")
@@ -119,9 +122,54 @@ func runExec(raw []string) {
 		return
 	}
 
-	if len(hosts) == 0 {
-		fmt.Fprintln(os.Stderr, "error: at least one host is required (-H)")
-		os.Exit(1)
+	isMulti := len(hosts) > 0
+
+	if !isMulti {
+		// ---- single-host mode (like ssh) ----
+		if fs.NArg() == 0 {
+			fmt.Fprintln(os.Stderr, "error: host is required")
+			osExit(1)
+		}
+		host := fs.Arg(0)
+		cmdArgs := fs.Args()[1:]
+
+		client, _, err := cfg.connect(host)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			osExit(1)
+		}
+		defer client.Close()
+
+		if len(cmdArgs) == 0 {
+			// Interactive shell
+			if err := startShell(client); err != nil {
+				fmt.Fprintf(os.Stderr, "error: %v\n", err)
+				osExit(1)
+			}
+			return
+		}
+
+		// Single command execution (stream output directly)
+		cmd := strings.Join(cmdArgs, " ")
+		if err := runCommandDirect(client, cmd, os.Stdout, os.Stderr); err != nil {
+			if exitErr, ok := err.(*ssh.ExitError); ok {
+				osExit(exitErr.ExitStatus())
+			}
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			osExit(1)
+		}
+		return
+	}
+
+	// ---- multi-host mode (like sshx exec) ----
+	if concurrency < 1 {
+		concurrency = 1
+	}
+	if concurrency > 128 {
+		concurrency = 128
+	}
+	if concurrency > len(hosts) {
+		concurrency = len(hosts)
 	}
 
 	isScript := filePath != ""
@@ -130,18 +178,18 @@ func runExec(raw []string) {
 	if isScript {
 		if fs.NArg() > 0 {
 			fmt.Fprintln(os.Stderr, "error: -f and inline command are mutually exclusive")
-			os.Exit(1)
+			osExit(1)
 		}
 		data, err := os.ReadFile(filePath)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "error: read script %s: %v\n", filePath, err)
-			os.Exit(1)
+			osExit(1)
 		}
 		cmdOrContent = string(data)
 	} else {
 		if fs.NArg() == 0 {
 			fmt.Fprintln(os.Stderr, "error: command is required (or use -f for a script)")
-			os.Exit(1)
+			osExit(1)
 		}
 		cmdOrContent = strings.Join(fs.Args(), " ")
 	}
@@ -158,44 +206,12 @@ func runExec(raw []string) {
 	}
 	if len(clients) == 0 {
 		fmt.Fprintln(os.Stderr, "error: failed to establish any connections")
-		os.Exit(1)
+		osExit(1)
 	}
 	if concurrency <= 1 {
 		runCommandSerialExec(clients, cmdOrContent, isScript)
 	} else {
 		runCommandParallelExec(clients, cmdOrContent, concurrency, isScript)
-	}
-}
-
-// shell
-
-func runShell(raw []string) {
-	var cfg sshCfg
-	cfg.defaults()
-	var host string
-
-	fs := newFlagSet("shell")
-	cfg.bindFlags(fs)
-	fs.StringVarP(&host, "host", "H", "", "target host ([user:pass@]host[:port])")
-	fs.Parse(raw)
-	if cfg.showHelp {
-		fs.Usage()
-		return
-	}
-
-	if host == "" {
-		fmt.Fprintln(os.Stderr, "error: host is required (-H)")
-		os.Exit(1)
-	}
-	client, _, err := cfg.connect(host)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
-	}
-	defer client.Close()
-	if err := startShell(client); err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
 	}
 }
 
@@ -217,23 +233,23 @@ func runPush(raw []string) {
 
 	if host == "" {
 		fmt.Fprintln(os.Stderr, "error: host is required (-H)")
-		os.Exit(1)
+		osExit(1)
 	}
 	if fs.NArg() < 2 {
 		fmt.Fprintln(os.Stderr, "error: local-path and remote-path are required")
-		os.Exit(1)
+		osExit(1)
 	}
 	localPath, remotePath := fs.Arg(0), fs.Arg(1)
 
 	client, _, err := cfg.connect(host)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
+		osExit(1)
 	}
 	defer client.Close()
 	if err := pushFile(client, localPath, remotePath); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
+		osExit(1)
 	}
 }
 
@@ -255,43 +271,52 @@ func runPull(raw []string) {
 
 	if host == "" {
 		fmt.Fprintln(os.Stderr, "error: host is required (-H)")
-		os.Exit(1)
+		osExit(1)
 	}
 	if fs.NArg() < 2 {
 		fmt.Fprintln(os.Stderr, "error: remote-path and local-path are required")
-		os.Exit(1)
+		osExit(1)
 	}
 	remotePath, localPath := fs.Arg(0), fs.Arg(1)
 
 	client, _, err := cfg.connect(host)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
+		osExit(1)
 	}
 	defer client.Close()
 	if err := pullFile(client, remotePath, localPath); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
+		osExit(1)
 	}
 }
 
 func printUsage() {
 	fmt.Fprint(os.Stderr, "sshx - lightweight SSH remote execution tool\n\n"+
-		"Usage:\n  sshx <subcommand> [flags...]\n\n"+
-		"Subcommands:\n"+
-		"  exec    execute a command on remote hosts\n"+
-		"  shell   start an interactive PTY shell\n"+
-		"  push    upload a file via SCP\n"+
-		"  pull    download a file via SCP\n\n"+
-		`Use "sshx <subcommand> -h" for detailed subcommand help.`+"\n\n"+
+		"Usage:\n"+
+		"  sshx [flags] <host> [command...]               single host (shell if no command)\n"+
+		"  sshx [flags] -H <host> [-H <host>...] [-c n] [-f script] <command>\n"+
+		"                                                   multi-host execution\n"+
+		"  sshx push   [flags] <local> <remote>             upload file via SCP\n"+
+		"  sshx pull   [flags] <remote> <local>             download file via SCP\n\n"+
+		"Flags:\n"+
+		"  -p, --port int        SSH port (default 22)\n"+
+		"  -u, --user string     SSH username\n"+
+		"  -P, --passwd string   SSH password (supports $VAR env refs; default $SSHX_PASSWD)\n"+
+		"  -i, --identity        private key path (~/.ssh/id_rsa)\n"+
+		"  -t, --timeout         connection timeout (default 10s)\n"+
+		"  -J, --jump strings    jump/bastion host (repeatable for chain)\n"+
+		"  -H, --host strings    target host for multi-host mode (repeatable)\n"+
+		"  -c, --concurrency     max concurrent connections (default 1, max 128)\n"+
+		"  -f, --file            local shell script to upload and run\n"+
+		"  -h, --help            show help\n\n"+
 		"Examples:\n"+
-		"  sshx exec -f deploy.sh -H host1 -H host2\n"+
-		`  sshx exec -H 192.168.1.10 "ls -la /"`+"\n"+
-		`  sshx exec -H host1 -H host2 "uptime"`+"\n"+
-		"  sshx exec -c 4 -H host1 -H host2 "+
-		"# c capped at len(hosts)=2\n"+
-		`  sshx exec -J 192.168.1.10 -H 192.168.1.20 "hostname"`+"\n"+
-		"  sshx shell -H 192.168.1.10\n"+
-		"  sshx push -H 192.168.1.10 ./local.txt /tmp/remote.txt\n"+
-		"  sshx pull -H 192.168.1.10 /tmp/remote.txt ./local.txt\n")
+		"  sshx 192.168.1.10                              # interactive shell\n"+
+		`  sshx 192.168.1.10 "ls -la /"`+"\n"+
+		`  sshx -J bastion 192.168.1.10 "hostname"`+"\n"+
+		"  sshx -H host1 -H host2 uptime                  # multi-host sequential\n"+
+		"  sshx -H host1 -H host2 -c 4 uptime             # multi-host concurrent\n"+
+		"  sshx -H host1 -H host2 -f deploy.sh            # script on multiple hosts\n"+
+		"  sshx push 192.168.1.10 ./local.txt /tmp/remote.txt\n"+
+		"  sshx pull 192.168.1.10 /tmp/remote.txt ./local.txt\n")
 }

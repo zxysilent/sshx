@@ -14,14 +14,37 @@ cd sshx
 go build -o sshx .
 ```
 
-## 子命令速览
+## 快速开始
 
-| 子命令  | 用途 | 多主机 |
+行为对标原生 `ssh`，同时天然支持多主机并发：
+
+```bash
+# 交互式 shell（对齐 ssh）
+sshx 192.168.1.10
+
+# 单机执行命令
+sshx 192.168.1.10 "ls -la /"
+
+# 多机执行（-H 可重复）
+sshx -H host1 -H host2 -H host3 "df -h"
+
+# 多机并发（-c 控制并发度）
+sshx -H h1 -H h2 -H h3 -H h4 -c 4 "uptime"
+
+# 文件传输
+sshx push -H 192.168.1.10 ./local.txt /tmp/remote.txt
+sshx pull -H 192.168.1.10 /etc/hostname ./hostname.txt
+```
+
+## 子命令
+
+| 子命令 | 用途 | 多主机 |
 |--------|------|:-----:|
-| `exec` | 远程执行命令或本地脚本 | ✅ |
-| `shell`| 交互式 PTY 终端 | ❌ |
+| *(默认)* | 交互 shell 或命令执行 | ✅ |
 | `push` | 上传文件 (SCP) | ❌ |
 | `pull` | 下载文件 (SCP) | ❌ |
+
+> `exec` 保留为默认模式的别名。
 
 ## `-H` 格式
 
@@ -42,20 +65,82 @@ go build -o sshx .
 
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
-| `-H` | **必填** | 目标主机（exec 可多次指定） |
+| `-H` | 无 | 多主机模式目标（可多次指定） |
 | `-p` | `22` | SSH 端口 |
 | `-u` | 当前用户 | SSH 用户名 |
-| `-P` | `$SSHX_PASSWD` | SSH 密码 |
+| `-P` | `$SSHX_PASSWD` | SSH 密码（支持 `$VAR` 展开） |
 | `-i` | `~/.ssh/id_rsa` | 私钥路径 |
 | `-t` | `10s` | 连接超时 |
-| `-J` | 无 | 跳板机（可多次指定） |
-
-### exec 专属
-
-| 参数 | 默认值 | 说明 |
-|------|--------|------|
+| `-J` | 无 | 跳板机（可多次指定，链式） |
 | `-c` | `1` | 最大并发数 (1=串行, 128=最大) |
 | `-f` | 无 | 本地 Shell 脚本路径 |
+| `-h` | — | 显示帮助 |
+
+`-c` / `-f` 仅在多主机模式 (`-H`) 下生效。
+
+## 使用模式
+
+### 单机模式（对齐 ssh）
+
+```bash
+# 交互式 shell
+sshx 192.168.1.10
+sshx root@192.168.1.10
+
+# 单条命令
+sshx 192.168.1.10 "df -h"
+sshx -u admin -P secret 192.168.1.10 "hostname"
+
+# 过跳板机
+sshx -J bastion 192.168.1.20 "uptime"
+```
+
+### 多机模式（`-H`）
+
+```bash
+# 串行（默认 -c 1）
+sshx -H host1 -H host2 -H host3 "df -h"
+
+# 并发
+sshx -H h1 -H h2 -H h3 -H h4 -c 4 "uptime"
+
+# 混合 -H 凭据
+sshx -H root:pass1@host1 -H root:pass2@host2 "whoami"
+
+# 本地脚本推送到多机执行
+sshx -f deploy.sh -H host1 -H host2 -H host3
+
+# 脚本 + 并发
+sshx -f script.sh -H h1 -H h2 -c 4
+```
+
+### 文件传输 (push / pull)
+
+```bash
+# 上传
+sshx push -H 192.168.1.10 ./config.yaml /etc/app/config.yaml
+
+# 下载
+sshx pull -H 192.168.1.10 /var/log/app.log ./app.log
+
+# 过跳板机传输
+sshx push -J 192.168.1.10 -H 192.168.1.20 ./config.yaml /tmp/config.yaml
+```
+
+## 跳板机 (`-J`)
+
+支持多次指定，按顺序逐跳建立隧道：
+
+```bash
+# 单跳板
+sshx -J root:pass@192.168.1.10 -H 192.168.1.20 "hostname"
+
+# 多跳链
+sshx -J hop1 -J hop2 -H target "uptime"
+
+# 文件传输过跳板
+sshx push -J 192.168.1.10 -H 192.168.1.20 ./local.txt /tmp/remote.txt
+```
 
 ## 认证策略
 
@@ -63,39 +148,22 @@ go build -o sshx .
 2. **密码回退**: `-P` 参数 → `$SSHX_PASSWD` 环境变量 → `-H` 行内指定
 3. **报错退出**: 全部不可用时报错
 
-## 跳板机 (`-J`)
-
-支持多次指定，按顺序逐跳建立隧道。所有子命令均支持。
-
-```bash
-# 单跳板
-sshx exec -J root:pass@192.168.1.10 -H 192.168.1.20 "hostname"
-
-# 多跳链
-sshx exec -J hop1 -J hop2 -H target "uptime"
-
-# 文件传输过跳板
-sshx push -J 192.168.1.10 -H 192.168.1.20 ./local.txt /tmp/remote.txt
-```
-
-## 密码环境变量
-
-避免密码出现在 shell 历史和进程列表中，使用 `SSHX_PASSWD`:
+避免密码出现在 shell 历史中：
 
 ```bash
 export SSHX_PASSWD="your-secret"
-sshx exec -H 192.168.1.10 "uptime"
+sshx -H 192.168.1.10 "uptime"
 ```
 
 也支持 `-P $MY_ENV_VAR` 引用其他环境变量（自动 `$VAR` 展开）。
 
 ## 参数混排
 
-通过 `pflag` 支持标志与命令参数任意位置交错，不需要把所有 `-H` 放在前面：
+标志与位置参数可任意交错：
 
 ```bash
 # 以下写法全部等价
-sshx exec -H host1 -H host2 "ls -la"
-sshx exec "ls -la" -H host1 -H host2
-sshx exec -c 4 ls -la -H host1 -H host2 /tmp
+sshx -H host1 -H host2 "ls -la"
+sshx "ls -la" -H host1 -H host2
+sshx -c 4 ls -la -H host1 -H host2 /tmp
 ```

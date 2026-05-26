@@ -181,10 +181,37 @@ func (s *testSSHServer) handleExec(channel ssh.Channel, req *ssh.Request) {
 		return
 	}
 
-	// Normal command: echo back
 	req.Reply(true, nil)
-	io.WriteString(channel, payload.Command)
-	channel.SendRequest("exit-status", false, ssh.Marshal(&struct{ ExitStatus uint32 }{0}))
+
+	// "exit:N" prefix → exit with code N (and echo rest as stdout)
+	exitCode := uint32(0)
+	cmd := payload.Command
+	if strings.HasPrefix(cmd, "exit:") {
+		rest := strings.TrimPrefix(cmd, "exit:")
+		if n, _, found := strings.Cut(rest, " "); found {
+			if code, err := strconv.Atoi(n); err == nil && code >= 0 && code <= 255 {
+				exitCode = uint32(code)
+				cmd = rest[len(n)+1:]
+			}
+		} else {
+			if code, err := strconv.Atoi(rest); err == nil && code >= 0 && code <= 255 {
+				channel.SendRequest("exit-status", false, ssh.Marshal(&struct{ ExitStatus uint32 }{uint32(code)}))
+				return
+			}
+		}
+	}
+
+	// "bash -s" → read stdin, echo as stdout (simulate script execution)
+	if cmd == "bash -s" {
+		data, _ := io.ReadAll(channel)
+		channel.Write(data)
+		channel.SendRequest("exit-status", false, ssh.Marshal(&struct{ ExitStatus uint32 }{exitCode}))
+		return
+	}
+
+	// Default: echo command back + optional exit code from "exit:N <command>" pattern
+	io.WriteString(channel, cmd)
+	channel.SendRequest("exit-status", false, ssh.Marshal(&struct{ ExitStatus uint32 }{exitCode}))
 }
 
 func (s *testSSHServer) handleShell(channel ssh.Channel, req *ssh.Request) {
