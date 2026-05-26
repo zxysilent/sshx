@@ -50,12 +50,15 @@ jobs:
         with:
           path: artifacts
 
-      - name: Generate checksums
+      - name: Prepare release assets
         run: |
-          cd artifacts
-          find . -type f -name 'sshx-*' -exec mv {} . \;
-          find . -type d -name 'sshx-*' -exec rm -rf {} + 2>/dev/null || true
-          sha256sum sshx-* > checksums.txt
+          mkdir -p release
+          find artifacts -type f -name 'sshx-*' -exec cp -v {} release/ \;
+          echo "=== downloaded artifacts ==="
+          find artifacts -type f | sort
+          echo "=== release assets ==="
+          ls -la release/
+          cd release && sha256sum sshx-* > checksums.txt
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
@@ -73,6 +76,6 @@ jobs:
             go install github.com/${{ github.repository }}@${{ github.ref_name }}
             ```
           files: |
-            artifacts/sshx-*
-            artifacts/checksums.txt
+            release/sshx-*
+            release/checksums.txt
           generate_release_notes: true
