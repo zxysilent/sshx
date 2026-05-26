@@ -50,11 +50,12 @@ jobs:
           [ "${{ matrix.goos }}" = "windows" ] && ext=".exe"
           export TZ=Asia/Shanghai
           buildTime=$(date +'%Y-%m-%d %H:%M:%S')
-          # ARMv7 for linux/arm (defaults to ARMv6 in Go, but ARMv7 is more common)
-          GOARM=""
-          [ "${{ matrix.goos }}" = "linux" ] && [ "${{ matrix.goarch }}" = "arm" ] && GOARM="GOARM=7"
-          CGO_ENABLED=0 ${GOARM} GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} \
-            go build -ldflags "-s -w -X 'main.buildSha=${{ github.sha }}' -X 'main.buildTime=${buildTime}'" \
+          export CGO_ENABLED=0
+          export GOOS=${{ matrix.goos }}
+          export GOARCH=${{ matrix.goarch }}
+          # ARMv7 for linux/arm
+          [ "${{ matrix.goos }}" = "linux" ] && [ "${{ matrix.goarch }}" = "arm" ] && export GOARM=7
+          go build -ldflags "-s -w -X 'main.buildSha=${{ github.sha }}' -X 'main.buildTime=${buildTime}'" \
             -o "sshx-${{ matrix.goos }}-${{ matrix.goarch }}${ext}" .
           echo "R=sshx-${{ matrix.goos }}-${{ matrix.goarch }}${ext}" >> $GITHUB_ENV
 
