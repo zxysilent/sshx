@@ -15,9 +15,9 @@ import (
 // osExit is a variable to allow tests to intercept os.Exit calls.
 var osExit = os.Exit
 
-// Build metadata — injected via -ldflags at build time.
+// Build metadata — injected via -ldflags at build time; defaults below.
 var (
-	version   = "dev"
+	version   = "v0.2.1"
 	buildTime = "unknown"
 	buildSha  = "unknown"
 )

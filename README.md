@@ -5,14 +5,11 @@
 ## 安装
 
 ```bash
-# go install（推荐）
-go install github.com/zxysilent/sshx@latest
+# go install（注入编译时间）
+go install -ldflags "-s -w -X 'main.buildTime=$(date +'%Y-%m-%d %H:%M:%S')'" github.com/zxysilent/sshx@latest
 
-# 从源码编译（带版本信息）
-git clone https://github.com/zxysilent/sshx.git
-cd sshx
-buildSha=$(git rev-parse --short=8 HEAD)
-go build -ldflags "-s -w -X 'main.buildSha=${buildSha}' -X 'main.buildTime=$(date +'%Y-%m-%d %H:%M:%S')' -X 'main.version=v0.2.1'" -o sshx .
+# 从源码编译（注入 git sha + 编译时间）
+go build -ldflags "-s -w -X 'main.buildSha=$(git rev-parse --short=8 HEAD)' -X 'main.buildTime=$(date +'%Y-%m-%d %H:%M:%S')'" -o sshx .
 ```
 
 ## 快速开始

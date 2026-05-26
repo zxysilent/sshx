@@ -2,19 +2,16 @@
 
 ## Installation
 
-### `go install` (recommended)
+### `go install` (with build timestamp)
 
 ```bash
-go install github.com/zxysilent/sshx@latest
+go install -ldflags "-s -w -X 'main.buildTime=$(date +'%Y-%m-%d %H:%M:%S')'" github.com/zxysilent/sshx@latest
 ```
 
-### Build from source (with version info)
+### Build from source (with git sha + timestamp)
 
 ```bash
-git clone https://github.com/zxysilent/sshx.git
-cd sshx
-buildSha=$(git rev-parse --short=8 HEAD)
-go build -ldflags "-s -w -X 'main.buildSha=${buildSha}' -X 'main.buildTime=$(date +'%Y-%m-%d %H:%M:%S')' -X 'main.version=v0.2.1'" -o sshx .
+go build -ldflags "-s -w -X 'main.buildSha=$(git rev-parse --short=8 HEAD)' -X 'main.buildTime=$(date +'%Y-%m-%d %H:%M:%S')'" -o sshx .
 ```
 
 ## Quick Start
