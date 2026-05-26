@@ -72,8 +72,9 @@ func pushFile(client *ssh.Client, localPath, remotePath string) error {
 		return fmt.Errorf("scp: send file data failed: %w", err)
 	}
 
-	// Send end-of-file marker
+	// Send end-of-file marker + close stdin to signal EOF
 	fmt.Fprint(stdinPipe, "\x00")
+	stdinPipe.Close()
 
 	// Wait for final ACK
 	if _, err := stdoutPipe.Read(ackBuf); err != nil {
@@ -163,8 +164,9 @@ func pullFile(client *ssh.Client, remotePath, localPath string) error {
 		return fmt.Errorf("scp: wait for end marker failed: %w", err)
 	}
 
-	// Send final ACK
+	// Send final ACK + close stdin to signal EOF
 	fmt.Fprint(stdinPipe, "\x00")
+	stdinPipe.Close()
 
 	fmt.Fprintf(os.Stderr, "downloaded: %s:%s -> %s (%d bytes)\n", client.RemoteAddr(), remotePath, localPath, fileSize)
 	return session.Wait()

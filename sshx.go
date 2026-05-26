@@ -17,7 +17,7 @@ var osExit = os.Exit
 
 // Build metadata — injected via -ldflags at build time; defaults below.
 var (
-	version   = "v0.3.1"
+	version   = "v0.3.2"
 	buildTime = "unknown"
 	buildSha  = "unknown"
 )
