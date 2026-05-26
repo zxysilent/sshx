@@ -11,6 +11,8 @@ permissions:
 jobs:
   build-release:
     runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     strategy:
       matrix:
         goos: [linux, darwin, windows]
@@ -44,6 +46,8 @@ jobs:
   release:
     needs: build-release
     runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     steps:
       - name: Download artifacts
         uses: actions/download-artifact@v4
