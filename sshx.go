@@ -15,6 +15,13 @@ import (
 // osExit is a variable to allow tests to intercept os.Exit calls.
 var osExit = os.Exit
 
+// Build metadata — injected via -ldflags at build time.
+var (
+	version   = "dev"
+	buildTime = "unknown"
+	buildSha  = "unknown"
+)
+
 func main() {
 	if len(os.Args) < 2 {
 		printUsage()
@@ -30,8 +37,12 @@ func main() {
 		runPush(os.Args[2:])
 	case "pull":
 		runPull(os.Args[2:])
+	case "-v", "--version", "-V", "version":
+		printVersion()
+		return
 	case "-h", "--help", "help":
 		printUsage()
+		return
 	default:
 		runDefault(os.Args[1:])
 	}
@@ -291,6 +302,10 @@ func runPull(raw []string) {
 	}
 }
 
+func printVersion() {
+	fmt.Printf("sshx version %s (commit %s, built %s)\n", version, buildSha, buildTime)
+}
+
 func printUsage() {
 	fmt.Fprint(os.Stderr, "sshx - lightweight SSH remote execution tool\n\n"+
 		"Usage:\n"+
@@ -309,7 +324,8 @@ func printUsage() {
 		"  -H, --host strings    target host for multi-host mode (repeatable)\n"+
 		"  -c, --concurrency     max concurrent connections (default 1, max 128)\n"+
 		"  -f, --file            local shell script to upload and run\n"+
-		"  -h, --help            show help\n\n"+
+		"  -h, --help            show help\n"+
+		"  -V, --version         show version\n\n"+
 		"Examples:\n"+
 		"  sshx 192.168.1.10                              # interactive shell\n"+
 		`  sshx 192.168.1.10 "ls -la /"`+"\n"+

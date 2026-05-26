@@ -8,12 +8,13 @@
 go install github.com/zxysilent/sshx@latest
 ```
 
-### Build from source
+### Build from source (with version info)
 
 ```bash
 git clone https://github.com/zxysilent/sshx.git
 cd sshx
-go build -o sshx .
+buildSha=$(git rev-parse --short=8 HEAD)
+go build -ldflags "-s -w -X 'main.buildSha=${buildSha}' -X 'main.buildTime=$(date +'%Y-%m-%d %H:%M:%S')' -X 'main.version=v0.2.1'" -o sshx .
 ```
 
 ## Quick Start
