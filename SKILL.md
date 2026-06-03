@@ -15,8 +15,7 @@ Lightweight SSH tool. Default mode behaves like `ssh`; add `-H` for multi-host.
 ```bash
 sshx [flags] <host> [command...]                          # single host (ssh-like)
 sshx [flags] -H <host> [-H ...] [-c n] [-f script] <cmd>  # multi-host
-sshx push  [flags] <local> <remote>                       # upload
-sshx pull  [flags] <remote> <local>                       # download
+sshx scp [flags] <source> <target>                        # upload/download one file
 ```
 
 - No command → interactive PTY shell (single host)
@@ -63,15 +62,16 @@ sshx -J bastion -H internal.host "hostname"
 sshx -J hop1 -J hop2 -H target "uptime"
 
 # Upload config
-sshx push -H host ./config.yaml /etc/app/config.yaml
+sshx scp -p 2222 ./config.yaml user:pass@host:/etc/app/config.yaml
 
 # Grab logs
-sshx pull -H host /var/log/app.log ./app.log
+sshx scp host:/var/log/app.log ./app.log
 ```
 
 ## Constraints
 
-- `push`/`pull` are single-host, single-file, no directories.
+- `scp` is single-host, single-file, no directories.
+- SCP remote paths use `[user[:pass]@]host:/path`; specify ports with `-p`, not `host:port:/path`.
 - `shell` (PTY) requires a real terminal — don't invoke in automated scripts.
 - All hosts share one private key (`-i`); use inline `user:pass@host` for different passwords.
 - No sudo password prompt.
