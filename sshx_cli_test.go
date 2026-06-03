@@ -435,9 +435,66 @@ func TestCLI_ExecAlias(t *testing.T) {
 	}
 }
 
-// ---- push ----
+// ---- scp ----
 
-func TestCLI_Push(t *testing.T) {
+func remoteSpec(srv *testSSHServer, remotePath string) string {
+	return "testuser:testpass@127.0.0.1:" + remotePath
+}
+
+func TestParseScpEndpoint_RemoteForms(t *testing.T) {
+	tests := []struct {
+		name     string
+		raw      string
+		hostSpec string
+		path     string
+	}{
+		{"inline user pass", "root:pass@192.168.1.10:/tmp/a", "root:pass@192.168.1.10", "/tmp/a"},
+		{"host abs path", "192.168.1.10:/tmp/a", "192.168.1.10", "/tmp/a"},
+		{"password special chars", "user:p@ss:w0rd@host:/tmp/a", "user:p@ss:w0rd@host", "/tmp/a"},
+		{"ipv6", "user@[::1]:/tmp/a", "user@[::1]", "/tmp/a"},
+		{"home path", "host:~/a", "host", "~/a"},
+		{"dot path", "host:./a", "host", "./a"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ep, err := parseScpEndpoint(tt.raw)
+			if err != nil {
+				t.Fatalf("parseScpEndpoint failed: %v", err)
+			}
+			if !ep.remote {
+				t.Fatal("endpoint should be remote")
+			}
+			if ep.hostSpec != tt.hostSpec {
+				t.Errorf("hostSpec = %q, want %q", ep.hostSpec, tt.hostSpec)
+			}
+			if ep.path != tt.path {
+				t.Errorf("path = %q, want %q", ep.path, tt.path)
+			}
+		})
+	}
+}
+
+func TestParseScpEndpoint_AmbiguousRelativeRemote(t *testing.T) {
+	_, err := parseScpEndpoint("host:relative/path")
+	if err == nil {
+		t.Fatal("expected ambiguous remote path error")
+	}
+	if !strings.Contains(err.Error(), "ambiguous remote path") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestParseScpEndpoint_InlinePortRejected(t *testing.T) {
+	_, err := parseScpEndpoint("root:pass@192.168.1.10:2222:/tmp/a")
+	if err == nil {
+		t.Fatal("expected inline port error")
+	}
+	if !strings.Contains(err.Error(), "use -p/--port") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestCLI_ScpUpload(t *testing.T) {
 	srv := newTestSSHServer(t)
 	defer srv.Close()
 
@@ -449,13 +506,12 @@ func TestCLI_Push(t *testing.T) {
 	remotePath := filepath.Join(srv.TempDir(), "pushed.txt")
 
 	_, stderr, exitCode := cliRun(
-		runPush,
-		[]string{"-p", fmt.Sprint(intPort(srv)), "-u", "testuser", "-P", "testpass",
-			"-H", srv.Addr(), localPath, remotePath},
+		runScp,
+		[]string{"-p", fmt.Sprint(intPort(srv)), "-u", "nobody", "-P", "wrong", localPath, remoteSpec(srv, remotePath)},
 	)
 
 	if exitCode != 0 {
-		t.Errorf("exitCode = %d, want 0", exitCode)
+		t.Errorf("exitCode = %d, want 0; stderr=%s", exitCode, stderr)
 	}
 	if !strings.Contains(stderr, "uploaded") {
 		t.Errorf("expected 'uploaded' in stderr, got: %s", stderr)
@@ -470,44 +526,7 @@ func TestCLI_Push(t *testing.T) {
 	}
 }
 
-func TestCLI_Push_MissingArgs(t *testing.T) {
-	_, stderr, exitCode := cliRun(runPush, []string{"-H", "host"})
-	if exitCode != 1 {
-		t.Errorf("exitCode = %d, want 1", exitCode)
-	}
-	if !strings.Contains(stderr, "local-path and remote-path are required") {
-		t.Errorf("expected arg error, got: %s", stderr)
-	}
-}
-
-func TestCLI_Push_MissingHost(t *testing.T) {
-	_, stderr, exitCode := cliRun(runPush, []string{"src", "dst"})
-	if exitCode != 1 {
-		t.Errorf("exitCode = %d, want 1", exitCode)
-	}
-	if !strings.Contains(stderr, "host is required") {
-		t.Errorf("expected host error, got: %s", stderr)
-	}
-}
-
-func TestCLI_Push_ConnectionFailed(t *testing.T) {
-	_, stderr, exitCode := cliRun(
-		runPush,
-		[]string{"-t", "50ms", "-H", "10.255.255.1:22",
-			filepath.Join(t.TempDir(), "dummy"),
-			"/tmp/dummy"},
-	)
-	if exitCode != 1 {
-		t.Errorf("exitCode = %d, want 1", exitCode)
-	}
-	if !strings.Contains(stderr, "error") {
-		t.Errorf("expected error in stderr, got: %s", stderr)
-	}
-}
-
-// ---- pull ----
-
-func TestCLI_Pull(t *testing.T) {
+func TestCLI_ScpDownload(t *testing.T) {
 	srv := newTestSSHServer(t)
 	defer srv.Close()
 
@@ -519,13 +538,12 @@ func TestCLI_Pull(t *testing.T) {
 	localPath := filepath.Join(t.TempDir(), "pulled.txt")
 
 	_, stderr, exitCode := cliRun(
-		runPull,
-		[]string{"-p", fmt.Sprint(intPort(srv)), "-u", "testuser", "-P", "testpass",
-			"-H", srv.Addr(), remotePath, localPath},
+		runScp,
+		[]string{"-p", fmt.Sprint(intPort(srv)), remoteSpec(srv, remotePath), localPath},
 	)
 
 	if exitCode != 0 {
-		t.Errorf("exitCode = %d, want 0", exitCode)
+		t.Errorf("exitCode = %d, want 0; stderr=%s", exitCode, stderr)
 	}
 	if !strings.Contains(stderr, "downloaded") {
 		t.Errorf("expected 'downloaded' in stderr, got: %s", stderr)
@@ -540,23 +558,125 @@ func TestCLI_Pull(t *testing.T) {
 	}
 }
 
-func TestCLI_Pull_MissingArgs(t *testing.T) {
-	_, stderr, exitCode := cliRun(runPull, []string{"-H", "host"})
-	if exitCode != 1 {
-		t.Errorf("exitCode = %d, want 1", exitCode)
+func TestCLI_ScpUsesPortFlag(t *testing.T) {
+	srv := newTestSSHServer(t)
+	defer srv.Close()
+
+	localPath := filepath.Join(t.TempDir(), "inline-port.txt")
+	const content = "inline port wins"
+	if err := os.WriteFile(localPath, []byte(content), 0644); err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(stderr, "remote-path and local-path are required") {
-		t.Errorf("expected arg error, got: %s", stderr)
+	remotePath := filepath.Join(srv.TempDir(), "inline-port.txt")
+
+	_, stderr, exitCode := cliRun(
+		runScp,
+		[]string{"-p", fmt.Sprint(intPort(srv)), localPath, remoteSpec(srv, remotePath)},
+	)
+
+	if exitCode != 0 {
+		t.Errorf("exitCode = %d, want 0; stderr=%s", exitCode, stderr)
+	}
+	data, err := os.ReadFile(remotePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != content {
+		t.Errorf("remote content = %q, want %q", string(data), content)
 	}
 }
 
-func TestCLI_Pull_MissingHost(t *testing.T) {
-	_, stderr, exitCode := cliRun(runPull, []string{"src", "dst"})
-	if exitCode != 1 {
-		t.Errorf("exitCode = %d, want 1", exitCode)
+func TestCLI_ScpUploadViaJump(t *testing.T) {
+	jump := newTestSSHServer(t)
+	defer jump.Close()
+	target := newTestSSHServer(t)
+	defer target.Close()
+
+	localPath := filepath.Join(t.TempDir(), "jump-upload.txt")
+	const content = "jump upload"
+	if err := os.WriteFile(localPath, []byte(content), 0644); err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(stderr, "host is required") {
-		t.Errorf("expected host error, got: %s", stderr)
+	remotePath := filepath.Join(target.TempDir(), "jump-upload.txt")
+
+	_, stderr, exitCode := cliRun(
+		runScp,
+		[]string{"-p", fmt.Sprint(intPort(target)), "-J", "testuser:testpass@" + jump.Addr(), localPath, remoteSpec(target, remotePath)},
+	)
+
+	if exitCode != 0 {
+		t.Errorf("exitCode = %d, want 0; stderr=%s", exitCode, stderr)
+	}
+	data, err := os.ReadFile(remotePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != content {
+		t.Errorf("remote content = %q, want %q", string(data), content)
+	}
+}
+
+func TestCLI_ScpDownloadViaJump(t *testing.T) {
+	jump := newTestSSHServer(t)
+	defer jump.Close()
+	target := newTestSSHServer(t)
+	defer target.Close()
+
+	remotePath := filepath.Join(target.TempDir(), "jump-download.txt")
+	const content = "jump download"
+	if err := os.WriteFile(remotePath, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	localPath := filepath.Join(t.TempDir(), "jump-download.txt")
+
+	_, stderr, exitCode := cliRun(
+		runScp,
+		[]string{"-p", fmt.Sprint(intPort(target)), "-J", "testuser:testpass@" + jump.Addr(), remoteSpec(target, remotePath), localPath},
+	)
+
+	if exitCode != 0 {
+		t.Errorf("exitCode = %d, want 0; stderr=%s", exitCode, stderr)
+	}
+	data, err := os.ReadFile(localPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != content {
+		t.Errorf("local content = %q, want %q", string(data), content)
+	}
+}
+
+func TestCLI_ScpErrors(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"missing args", []string{"only-one"}, "source and target are required"},
+		{"remote to remote", []string{"h1:/a", "h2:/b"}, "remote-to-remote"},
+		{"local to local", []string{"a", "b"}, "local-to-local"},
+		{"ambiguous relative remote", []string{"host:relative/path", "b"}, "ambiguous remote path"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, stderr, exitCode := cliRun(runScp, tt.args)
+			if exitCode != 1 {
+				t.Errorf("exitCode = %d, want 1", exitCode)
+			}
+			if !strings.Contains(stderr, tt.want) {
+				t.Errorf("stderr = %q, want substring %q", stderr, tt.want)
+			}
+		})
+	}
+}
+
+func TestCLI_HelpFlag_Scp(t *testing.T) {
+	_, stderr, exitCode := cliRun(runScp, []string{"-h"})
+	if exitCode != 0 {
+		t.Errorf("exitCode = %d, want 0", exitCode)
+	}
+	if !strings.Contains(stderr, "Usage of scp") {
+		t.Errorf("expected usage text, got: %s", stderr)
 	}
 }
 
@@ -585,23 +705,13 @@ func TestCLI_HelpFlag(t *testing.T) {
 	}
 }
 
-func TestCLI_HelpFlag_Push(t *testing.T) {
-	_, stderr, exitCode := cliRun(runPush, []string{"-h"})
+func TestCLI_HelpFlag_NoPushPullSubcommands(t *testing.T) {
+	_, stderr, exitCode := cliRun(runDefault, []string{"-h"})
 	if exitCode != 0 {
 		t.Errorf("exitCode = %d, want 0", exitCode)
 	}
-	if !strings.Contains(stderr, "Usage of push") {
-		t.Errorf("expected usage text, got: %s", stderr)
-	}
-}
-
-func TestCLI_HelpFlag_Pull(t *testing.T) {
-	_, stderr, exitCode := cliRun(runPull, []string{"-h"})
-	if exitCode != 0 {
-		t.Errorf("exitCode = %d, want 0", exitCode)
-	}
-	if !strings.Contains(stderr, "Usage of pull") {
-		t.Errorf("expected usage text, got: %s", stderr)
+	if strings.Contains(stderr, "sshx push") || strings.Contains(stderr, "sshx pull") {
+		t.Errorf("usage should not advertise push/pull, got: %s", stderr)
 	}
 }
 

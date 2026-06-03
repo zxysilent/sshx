@@ -32,8 +32,8 @@ sshx -H host1 -H host2 -H host3 "df -h"
 sshx -H h1 -H h2 -H h3 -H h4 -c 4 "uptime"
 
 # File transfer
-sshx push -H 192.168.1.10 ./local.txt /tmp/remote.txt
-sshx pull -H 192.168.1.10 /etc/hostname ./hostname.txt
+sshx scp -p 2222 ./local.txt root:pass@192.168.1.10:/tmp/remote.txt
+sshx scp -J bastion 192.168.1.10:/etc/hostname ./hostname.txt
 ```
 
 ## Subcommands
@@ -41,8 +41,7 @@ sshx pull -H 192.168.1.10 /etc/hostname ./hostname.txt
 | Subcommand | Purpose | Multi-`-H` |
 |------------|---------|:----------:|
 | *(default)* | Interactive shell or command execution | ✅ |
-| `push` | Upload file via SCP | ❌ |
-| `pull` | Download file via SCP | ❌ |
+| `scp` | Upload/download one file via SCP | ❌ |
 
 > `exec` is kept as an alias for the default mode.
 
@@ -114,18 +113,20 @@ sshx -f deploy.sh -H host1 -H host2 -H host3
 sshx -f script.sh -H h1 -H h2 -c 4
 ```
 
-### File Transfer (push / pull)
+### File Transfer (`scp`)
 
 ```bash
 # Upload
-sshx push -H 192.168.1.10 ./config.yaml /etc/app/config.yaml
+sshx scp -p 2222 ./config.yaml root:pass@192.168.1.10:/etc/app/config.yaml
 
 # Download
-sshx pull -H 192.168.1.10 /var/log/app.log ./app.log
+sshx scp 192.168.1.10:/var/log/app.log ./app.log
 
 # Via jump host
-sshx push -J 192.168.1.10 -H 192.168.1.20 ./config.yaml /tmp/config.yaml
+sshx scp -J 192.168.1.10 ./config.yaml 192.168.1.20:/tmp/config.yaml
 ```
+
+Remote paths use `[user[:password]@]host:/path`. Specify the port with `-p`.
 
 ## Jump Host (`-J`)
 
@@ -139,7 +140,7 @@ sshx -J root:pass@192.168.1.10 -H 192.168.1.20 "hostname"
 sshx -J hop1 -J hop2 -H target "uptime"
 
 # File transfer via jump
-sshx push -J 192.168.1.10 -H 192.168.1.20 ./local.txt /tmp/remote.txt
+sshx scp -J 192.168.1.10 ./local.txt 192.168.1.20:/tmp/remote.txt
 ```
 
 ## Authentication Strategy

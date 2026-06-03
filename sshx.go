@@ -17,7 +17,7 @@ var osExit = os.Exit
 
 // Build metadata — injected via -ldflags at build time; defaults below.
 var (
-	version   = "v0.3.2"
+	version   = "v0.4.0"
 	buildTime = "unknown"
 	buildSha  = "unknown"
 )
@@ -33,10 +33,8 @@ func main() {
 	case "exec":
 		// exec is just an alias for the default mode.
 		runDefault(os.Args[2:])
-	case "push":
-		runPush(os.Args[2:])
-	case "pull":
-		runPull(os.Args[2:])
+	case "scp":
+		runScp(os.Args[2:])
 	case "-v", "--version", "-V", "version":
 		printVersion()
 		return
@@ -226,78 +224,94 @@ func runDefault(raw []string) {
 	}
 }
 
-// push
+// scp
 
-func runPush(raw []string) {
-	var cfg sshCfg
-	cfg.defaults()
-	var host string
-
-	fs := newFlagSet("push")
-	cfg.bindFlags(fs)
-	fs.StringVarP(&host, "host", "H", "", "target host ([user:pass@]host[:port])")
-	fs.Parse(raw)
-	if cfg.showHelp {
-		fs.Usage()
-		return
-	}
-
-	if host == "" {
-		fmt.Fprintln(os.Stderr, "error: host is required (-H)")
-		osExit(1)
-	}
-	if fs.NArg() < 2 {
-		fmt.Fprintln(os.Stderr, "error: local-path and remote-path are required")
-		osExit(1)
-	}
-	localPath, remotePath := fs.Arg(0), fs.Arg(1)
-
-	client, _, err := cfg.connect(host)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		osExit(1)
-	}
-	defer client.Close()
-	if err := pushFile(client, localPath, remotePath); err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		osExit(1)
-	}
+type scpEndpoint struct {
+	raw      string
+	remote   bool
+	hostSpec string
+	path     string
 }
 
-// pull
+func parseScpEndpoint(raw string) (scpEndpoint, error) {
+	for _, sep := range []string{":/", ":~/", ":./"} {
+		if idx := strings.Index(raw, sep); idx >= 0 {
+			hostSpec := raw[:idx]
+			if hostSpec == "" {
+				return scpEndpoint{}, fmt.Errorf("missing remote host in %q", raw)
+			}
+			if hc := parseHost(hostSpec); hc.Port != 0 {
+				return scpEndpoint{}, fmt.Errorf("remote endpoint port is not supported in %q: use -p/--port", raw)
+			}
+			return scpEndpoint{
+				raw:      raw,
+				remote:   true,
+				hostSpec: hostSpec,
+				path:     raw[idx+1:],
+			}, nil
+		}
+	}
+	if strings.Contains(raw, ":") {
+		return scpEndpoint{}, fmt.Errorf("ambiguous remote path %q: use host:/path, host:~/path, or host:./path", raw)
+	}
+	return scpEndpoint{raw: raw, path: raw}, nil
+}
 
-func runPull(raw []string) {
+func runScp(raw []string) {
 	var cfg sshCfg
 	cfg.defaults()
-	var host string
 
-	fs := newFlagSet("pull")
+	fs := newFlagSet("scp")
 	cfg.bindFlags(fs)
-	fs.StringVarP(&host, "host", "H", "", "target host ([user:pass@]host[:port])")
 	fs.Parse(raw)
 	if cfg.showHelp {
 		fs.Usage()
 		return
 	}
 
-	if host == "" {
-		fmt.Fprintln(os.Stderr, "error: host is required (-H)")
+	if fs.NArg() != 2 {
+		fmt.Fprintln(os.Stderr, "error: source and target are required")
 		osExit(1)
 	}
-	if fs.NArg() < 2 {
-		fmt.Fprintln(os.Stderr, "error: remote-path and local-path are required")
-		osExit(1)
-	}
-	remotePath, localPath := fs.Arg(0), fs.Arg(1)
-
-	client, _, err := cfg.connect(host)
+	src, err := parseScpEndpoint(fs.Arg(0))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		osExit(1)
 	}
-	defer client.Close()
-	if err := pullFile(client, remotePath, localPath); err != nil {
+	dst, err := parseScpEndpoint(fs.Arg(1))
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		osExit(1)
+	}
+
+	switch {
+	case !src.remote && dst.remote:
+		client, _, err := cfg.connect(dst.hostSpec)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			osExit(1)
+		}
+		defer client.Close()
+		if err := pushFile(client, src.path, dst.path); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			osExit(1)
+		}
+	case src.remote && !dst.remote:
+		client, _, err := cfg.connect(src.hostSpec)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			osExit(1)
+		}
+		defer client.Close()
+		if err := pullFile(client, src.path, dst.path); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			osExit(1)
+		}
+	case src.remote && dst.remote:
+		fmt.Fprintln(os.Stderr, "error: remote-to-remote scp is not supported")
+		osExit(1)
+	default:
+		fmt.Fprintln(os.Stderr, "error: local-to-local scp is not supported")
 		osExit(1)
 	}
 }
@@ -310,10 +324,8 @@ func printUsage() {
 	fmt.Fprint(os.Stderr, "sshx - lightweight SSH remote execution tool\n\n"+
 		"Usage:\n"+
 		"  sshx [flags] <host> [command...]               single host (shell if no command)\n"+
-		"  sshx [flags] -H <host> [-H <host>...] [-c n] [-f script] <command>\n"+
-		"                                                   multi-host execution\n"+
-		"  sshx push   [flags] <local> <remote>             upload file via SCP\n"+
-		"  sshx pull   [flags] <remote> <local>             download file via SCP\n\n"+
+		"  sshx [flags] -H <host> [-H <host>...] [-c n] [-f script] <command> multi-host execution\n"+
+		"  sshx scp [flags] <source> <target>               copy one file via SCP\n\n"+
 		"Flags:\n"+
 		"  -p, --port int        SSH port (default 22)\n"+
 		"  -u, --user string     SSH username\n"+
@@ -333,6 +345,6 @@ func printUsage() {
 		"  sshx -H host1 -H host2 uptime                  # multi-host sequential\n"+
 		"  sshx -H host1 -H host2 -c 4 uptime             # multi-host concurrent\n"+
 		"  sshx -H host1 -H host2 -f deploy.sh            # script on multiple hosts\n"+
-		"  sshx push 192.168.1.10 ./local.txt /tmp/remote.txt\n"+
-		"  sshx pull 192.168.1.10 /tmp/remote.txt ./local.txt\n")
+		"  sshx scp -p 2222 ./local.txt root:pass@192.168.1.10:/tmp/remote.txt\n"+
+		"  sshx scp -J bastion 192.168.1.10:/tmp/remote.txt ./local.txt\n")
 }

@@ -30,8 +30,8 @@ sshx -H host1 -H host2 -H host3 "df -h"
 sshx -H h1 -H h2 -H h3 -H h4 -c 4 "uptime"
 
 # 文件传输
-sshx push -H 192.168.1.10 ./local.txt /tmp/remote.txt
-sshx pull -H 192.168.1.10 /etc/hostname ./hostname.txt
+sshx scp -p 2222 ./local.txt root:pass@192.168.1.10:/tmp/remote.txt
+sshx scp -J bastion 192.168.1.10:/etc/hostname ./hostname.txt
 ```
 
 ## 子命令
@@ -39,8 +39,7 @@ sshx pull -H 192.168.1.10 /etc/hostname ./hostname.txt
 | 子命令 | 用途 | 多主机 |
 |--------|------|:-----:|
 | *(默认)* | 交互 shell 或命令执行 | ✅ |
-| `push` | 上传文件 (SCP) | ❌ |
-| `pull` | 下载文件 (SCP) | ❌ |
+| `scp` | 单文件上传/下载 (SCP) | ❌ |
 
 > `exec` 保留为默认模式的别名。
 
@@ -112,18 +111,20 @@ sshx -f deploy.sh -H host1 -H host2 -H host3
 sshx -f script.sh -H h1 -H h2 -c 4
 ```
 
-### 文件传输 (push / pull)
+### 文件传输 (`scp`)
 
 ```bash
 # 上传
-sshx push -H 192.168.1.10 ./config.yaml /etc/app/config.yaml
+sshx scp -p 2222 ./config.yaml root:pass@192.168.1.10:/etc/app/config.yaml
 
 # 下载
-sshx pull -H 192.168.1.10 /var/log/app.log ./app.log
+sshx scp 192.168.1.10:/var/log/app.log ./app.log
 
 # 过跳板机传输
-sshx push -J 192.168.1.10 -H 192.168.1.20 ./config.yaml /tmp/config.yaml
+sshx scp -J 192.168.1.10 ./config.yaml 192.168.1.20:/tmp/config.yaml
 ```
+
+远端路径格式：`[用户名[:密码]@]主机:/path`。端口统一使用 `-p` 指定。
 
 ## 跳板机 (`-J`)
 
@@ -137,7 +138,7 @@ sshx -J root:pass@192.168.1.10 -H 192.168.1.20 "hostname"
 sshx -J hop1 -J hop2 -H target "uptime"
 
 # 文件传输过跳板
-sshx push -J 192.168.1.10 -H 192.168.1.20 ./local.txt /tmp/remote.txt
+sshx scp -J 192.168.1.10 ./local.txt 192.168.1.20:/tmp/remote.txt
 ```
 
 ## 认证策略
