@@ -22,6 +22,7 @@ import (
 type testSSHServer struct {
 	listener net.Listener
 	addr     string
+	hostKey  ssh.PublicKey
 	done     chan struct{}
 	tmpDir   string
 }
@@ -58,6 +59,7 @@ func newTestSSHServer(t *testing.T) *testSSHServer {
 	s := &testSSHServer{
 		listener: listener,
 		addr:     listener.Addr().String(),
+		hostKey:  signer.PublicKey(),
 		done:     make(chan struct{}),
 	}
 	// Create a temp dir for scp file tests

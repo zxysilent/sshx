@@ -26,6 +26,9 @@ func TestSSHCfgDefaults(t *testing.T) {
 	if cfg.timeout != 10*time.Second {
 		t.Errorf("timeout = %v, want 10s", cfg.timeout)
 	}
+	if cfg.strictHostKey {
+		t.Error("strictHostKey should default to false")
+	}
 }
 
 func TestNewFlagSet(t *testing.T) {
@@ -51,6 +54,8 @@ func TestSSHCfgBindFlags(t *testing.T) {
 		"-P", "override",
 		"-J", "jump1",
 		"-J", "jump2",
+		"--strict-host-key",
+		"--known-hosts", "/tmp/known_hosts",
 	})
 
 	if cfg.port != 2222 {
@@ -64,6 +69,12 @@ func TestSSHCfgBindFlags(t *testing.T) {
 	}
 	if len(cfg.jumps) != 2 || cfg.jumps[0] != "jump1" || cfg.jumps[1] != "jump2" {
 		t.Errorf("jumps = %v, want [jump1 jump2]", cfg.jumps)
+	}
+	if !cfg.strictHostKey {
+		t.Error("strictHostKey should be true")
+	}
+	if cfg.knownHosts != "/tmp/known_hosts" {
+		t.Errorf("knownHosts = %q, want /tmp/known_hosts", cfg.knownHosts)
 	}
 }
 
@@ -97,6 +108,25 @@ func TestSSHCfgConnectMerge(t *testing.T) {
 	if label != "root@"+srvAddr(srv) {
 		t.Errorf("label = %q, want root@...", label)
 	}
+}
+
+func TestSSHCfgConnectStrictHostKeyKnownHost(t *testing.T) {
+	srv := newTestSSHServer(t)
+	defer srv.Close()
+
+	var cfg sshCfg
+	cfg.defaults()
+	cfg.user = "testuser"
+	cfg.passwd = "testpass"
+	cfg.port = intPort(srv)
+	cfg.strictHostKey = true
+	cfg.knownHosts = writeKnownHosts(t, srv, srv.hostKey)
+
+	client, _, err := cfg.connect(srvAddr(srv))
+	if err != nil {
+		t.Fatalf("cfg.connect strict host key failed: %v", err)
+	}
+	defer client.Close()
 }
 
 func srvAddr(s *testSSHServer) string {

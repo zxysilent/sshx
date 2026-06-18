@@ -3,10 +3,13 @@ package main
 import (
 	"net"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	flag "github.com/spf13/pflag"
+	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/knownhosts"
 )
 
 func TestResolveAddr(t *testing.T) {
@@ -58,6 +61,36 @@ func TestSSHClientInvalidPassword(t *testing.T) {
 	_, err := sshClient(srv.Addr(), "testuser", "wrongpass", "", 1*time.Second)
 	if err == nil {
 		t.Fatal("expected error for wrong password, got nil")
+	}
+}
+
+func TestSSHClientStrictHostKeyKnownHost(t *testing.T) {
+	srv := newTestSSHServer(t)
+	defer srv.Close()
+
+	callback, err := knownhosts.New(writeKnownHosts(t, srv, srv.hostKey))
+	if err != nil {
+		t.Fatalf("knownhosts.New: %v", err)
+	}
+	client, err := sshClientWithHostKeyCallback(srv.Addr(), "testuser", "testpass", "", 5*time.Second, callback)
+	if err != nil {
+		t.Fatalf("sshClientWithHostKeyCallback failed: %v", err)
+	}
+	defer client.Close()
+}
+
+func TestSSHClientStrictHostKeyMismatch(t *testing.T) {
+	srv := newTestSSHServer(t)
+	defer srv.Close()
+	other := newTestSSHServer(t)
+	defer other.Close()
+
+	callback, err := knownhosts.New(writeKnownHosts(t, srv, other.hostKey))
+	if err != nil {
+		t.Fatalf("knownhosts.New: %v", err)
+	}
+	if _, err := sshClientWithHostKeyCallback(srv.Addr(), "testuser", "testpass", "", 5*time.Second, callback); err == nil {
+		t.Fatal("expected host key mismatch, got nil")
 	}
 }
 
@@ -140,6 +173,16 @@ func TestExpandEnv(t *testing.T) {
 			}
 		})
 	}
+}
+
+func writeKnownHosts(t *testing.T, srv *testSSHServer, key ssh.PublicKey) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "known_hosts")
+	line := knownhosts.Line([]string{srv.Addr()}, key) + "\n"
+	if err := os.WriteFile(path, []byte(line), 0644); err != nil {
+		t.Fatalf("write known_hosts: %v", err)
+	}
+	return path
 }
 
 func TestParseHostEdgeCases(t *testing.T) {

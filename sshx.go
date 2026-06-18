@@ -58,13 +58,15 @@ func defaultUser() string {
 
 // sshCfg holds parsed SSH connection parameters shared across subcommands.
 type sshCfg struct {
-	port     int
-	user     string
-	passwd   string
-	key      string
-	timeout  time.Duration
-	jumps    []string
-	showHelp bool
+	port          int
+	user          string
+	passwd        string
+	key           string
+	timeout       time.Duration
+	jumps         []string
+	strictHostKey bool
+	knownHosts    string
+	showHelp      bool
 }
 
 func (c *sshCfg) defaults() {
@@ -72,6 +74,7 @@ func (c *sshCfg) defaults() {
 	c.user = defaultUser()
 	c.passwd = os.Getenv("SSHX_PASSWD")
 	c.timeout = 10 * time.Second
+	c.knownHosts = defaultKnownHostsPath()
 }
 
 // bindFlags registers shared SSH flags on fs.
@@ -82,6 +85,8 @@ func (c *sshCfg) bindFlags(fs *flag.FlagSet) {
 	fs.StringVarP(&c.key, "identity", "i", "", "private key path (~/.ssh/id_rsa)")
 	fs.DurationVarP(&c.timeout, "timeout", "t", c.timeout, "connection timeout")
 	fs.StringArrayVarP(&c.jumps, "jump", "J", nil, "jump/bastion host (repeatable for chain)")
+	fs.BoolVar(&c.strictHostKey, "strict-host-key", c.strictHostKey, "verify host keys against known_hosts")
+	fs.StringVar(&c.knownHosts, "known-hosts", c.knownHosts, "known_hosts file for --strict-host-key")
 	fs.BoolVarP(&c.showHelp, "help", "h", false, "show help")
 }
 
@@ -96,7 +101,15 @@ func (c *sshCfg) connect(raw string) (*ssh.Client, string, error) {
 	if hc.Port == 0 {
 		hc.Port = c.port
 	}
-	client, err := connectHost(hc.Host, hc.Port, hc.User, hc.Password, c.jumps, c.user, c.passwd, c.key, c.port, c.timeout)
+	hostKeyCallback, err := c.hostKeyCallback()
+	if err != nil {
+		return nil, hc.Display, err
+	}
+	client, err := connectHostWithHostKeyCallback(
+		hc.Host, hc.Port, hc.User, hc.Password,
+		c.jumps, c.user, c.passwd, c.key, c.port, c.timeout,
+		hostKeyCallback,
+	)
 	return client, hc.Display, err
 }
 
@@ -333,6 +346,8 @@ func printUsage() {
 		"  -i, --identity        private key path (~/.ssh/id_rsa)\n"+
 		"  -t, --timeout         connection timeout (default 10s)\n"+
 		"  -J, --jump strings    jump/bastion host (repeatable for chain)\n"+
+		"      --strict-host-key verify host keys against known_hosts (default off)\n"+
+		"      --known-hosts     known_hosts file for --strict-host-key\n"+
 		"  -H, --host strings    target host for multi-host mode (repeatable)\n"+
 		"  -c, --concurrency     max concurrent connections (default 1, max 128)\n"+
 		"  -f, --file            local shell script to upload and run\n"+

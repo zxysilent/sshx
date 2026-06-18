@@ -69,6 +69,8 @@ sshx scp -J bastion 192.168.1.10:/etc/hostname ./hostname.txt
 | `-i` | `~/.ssh/id_rsa` | 私钥路径 |
 | `-t` | `10s` | 连接超时 |
 | `-J` | 无 | 跳板机（可多次指定，链式） |
+| `--strict-host-key` | `false` | 严格校验主机密钥 |
+| `--known-hosts` | `~/.ssh/known_hosts` | 严格校验时使用的 known_hosts 文件 |
 | `-c` | `1` | 最大并发数 (1=串行, 128=最大) |
 | `-f` | 无 | 本地 Shell 脚本路径 |
 | `-h` | — | 显示帮助 |
@@ -87,6 +89,9 @@ sshx root@192.168.1.10
 # 单条命令
 sshx 192.168.1.10 "df -h"
 sshx -u admin -P secret 192.168.1.10 "hostname"
+
+# 需要主机密钥校验时显式开启
+sshx --strict-host-key --known-hosts ~/.ssh/known_hosts 192.168.1.10 "hostname"
 
 # 过跳板机
 sshx -J bastion 192.168.1.20 "uptime"
@@ -155,6 +160,16 @@ sshx -H 192.168.1.10 "uptime"
 ```
 
 也支持 `-P $MY_ENV_VAR` 引用其他环境变量（自动 `$VAR` 展开）。
+
+## 主机密钥校验
+
+默认行为不校验 SSH host key，以兼容临时主机、内网批量巡检和旧版用法。需要严格校验时显式开启：
+
+```bash
+sshx --strict-host-key --known-hosts ~/.ssh/known_hosts root@192.168.1.10 "uptime"
+```
+
+开启后，直连目标、跳板机链路和最终目标都会按 `known_hosts` 校验；未收录或密钥不匹配会连接失败。
 
 ## 参数混排
 
