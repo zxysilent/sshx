@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/knownhosts"
 )
 
 // envVarPattern matches $VAR and ${VAR} in password strings.
@@ -102,17 +103,50 @@ func buildAuthMethods(username, password, keyPath string) ([]ssh.AuthMethod, err
 	return authMethods, nil
 }
 
+func defaultKnownHostsPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return ""
+	}
+	return filepath.Join(home, ".ssh", "known_hosts")
+}
+
+func (c *sshCfg) hostKeyCallback() (ssh.HostKeyCallback, error) {
+	if !c.strictHostKey {
+		return ssh.InsecureIgnoreHostKey(), nil
+	}
+	if c.knownHosts == "" {
+		return nil, errors.New("--known-hosts is required with --strict-host-key")
+	}
+	callback, err := knownhosts.New(c.knownHosts)
+	if err != nil {
+		return nil, fmt.Errorf("load known_hosts %s: %w", c.knownHosts, err)
+	}
+	return callback, nil
+}
+
 // sshClient creates a direct SSH client connection.
 func sshClient(addr, username, password, keyPath string, timeout time.Duration) (*ssh.Client, error) {
+	return sshClientWithHostKeyCallback(addr, username, password, keyPath, timeout, ssh.InsecureIgnoreHostKey())
+}
+
+func sshClientWithHostKeyCallback(
+	addr, username, password, keyPath string,
+	timeout time.Duration,
+	hostKeyCallback ssh.HostKeyCallback,
+) (*ssh.Client, error) {
 	authMethods, err := buildAuthMethods(username, password, keyPath)
 	if err != nil {
 		return nil, err
+	}
+	if hostKeyCallback == nil {
+		hostKeyCallback = ssh.InsecureIgnoreHostKey()
 	}
 	config := &ssh.ClientConfig{
 		Timeout:         timeout,
 		User:            username,
 		Auth:            authMethods,
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		HostKeyCallback: hostKeyCallback,
 	}
 	client, err := ssh.Dial("tcp", addr, config)
 	if err != nil {
@@ -132,9 +166,23 @@ func dialViaJump(jump *ssh.Client, addr string, timeout time.Duration) (net.Conn
 func connectHost(targetHost string, targetPort int, targetUser, targetPass string,
 	jumps []string, globalUser, globalPass, globalKey string, globalPort int, timeout time.Duration,
 ) (*ssh.Client, error) {
+	return connectHostWithHostKeyCallback(
+		targetHost, targetPort, targetUser, targetPass,
+		jumps, globalUser, globalPass, globalKey, globalPort, timeout,
+		ssh.InsecureIgnoreHostKey(),
+	)
+}
+
+func connectHostWithHostKeyCallback(targetHost string, targetPort int, targetUser, targetPass string,
+	jumps []string, globalUser, globalPass, globalKey string, globalPort int, timeout time.Duration,
+	hostKeyCallback ssh.HostKeyCallback,
+) (*ssh.Client, error) {
+	if hostKeyCallback == nil {
+		hostKeyCallback = ssh.InsecureIgnoreHostKey()
+	}
 	targetAddr := net.JoinHostPort(targetHost, fmt.Sprintf("%d", targetPort))
 	if len(jumps) == 0 {
-		return sshClient(targetAddr, targetUser, targetPass, globalKey, timeout)
+		return sshClientWithHostKeyCallback(targetAddr, targetUser, targetPass, globalKey, timeout, hostKeyCallback)
 	}
 	type jumpCfg struct {
 		user, pass, addr string
@@ -165,7 +213,7 @@ func connectHost(targetHost string, targetPort int, targetUser, targetPass strin
 		return nil, fmt.Errorf("jump[0] %s auth: %w", jumpCfgs[0].addr, err)
 	}
 	first, err := ssh.Dial("tcp", jumpCfgs[0].addr, &ssh.ClientConfig{
-		Timeout: timeout, User: jumpCfgs[0].user, Auth: auth, HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		Timeout: timeout, User: jumpCfgs[0].user, Auth: auth, HostKeyCallback: hostKeyCallback,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("jump[0] %s dial failed: %w", jumpCfgs[0].addr, err)
@@ -183,7 +231,7 @@ func connectHost(targetHost string, targetPort int, targetUser, targetPass strin
 			return nil, fmt.Errorf("tunnel %s -> jump[%d] %s failed: %w", prevAddr, i, jumpCfgs[i].addr, err)
 		}
 		sc, chans, reqs, err := ssh.NewClientConn(conn, jumpCfgs[i].addr, &ssh.ClientConfig{
-			Timeout: timeout, User: jumpCfgs[i].user, Auth: auth, HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+			Timeout: timeout, User: jumpCfgs[i].user, Auth: auth, HostKeyCallback: hostKeyCallback,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("jump[%d] %s handshake via %s: %w", i, jumpCfgs[i].addr, prevAddr, err)
@@ -204,7 +252,7 @@ func connectHost(targetHost string, targetPort int, targetUser, targetPass strin
 		return nil, fmt.Errorf("tunnel %s -> %s failed: %w", prevAddr, targetAddr, err)
 	}
 	targetConn, chans, reqs, err := ssh.NewClientConn(tunnelConn, targetAddr, &ssh.ClientConfig{
-		Timeout: timeout, User: targetUser, Auth: targetAuth, HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		Timeout: timeout, User: targetUser, Auth: targetAuth, HostKeyCallback: hostKeyCallback,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("target ssh handshake via %s: %w", prevAddr, err)
